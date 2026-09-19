@@ -58,6 +58,8 @@ dependencies = [
  "aimon-api-types",
  "aimon-core",
  "axum",
+ "chrono",
+ "rusqlite",
  "serde",
  "serde_json",
  "tokio",

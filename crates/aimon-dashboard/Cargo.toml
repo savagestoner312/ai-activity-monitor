@@ -12,5 +12,7 @@ aimon-core = { path = "../aimon-core" }
 aimon-api-types = { path = "../aimon-api-types" }
 serde = { workspace = true }
 serde_json = { workspace = true }
+chrono = { workspace = true }
+rusqlite = { version = "0.32", features = ["bundled"] }
 axum = "0.7"
 tokio = { version = "1", features = ["rt", "net", "macros"] }
