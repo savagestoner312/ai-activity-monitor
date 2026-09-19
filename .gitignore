@@ -4,11 +4,14 @@
 *.sqlite
 reports/
 AIMonitor/
-# Python
+# Python (legacy, pre-Rust-rewrite)
 __pycache__/
 *.pyc
 .venv/
 venv/
+# Rust
+/target/
+frontend/aimon-ui/dist/
 # Editors / OS
 .vscode/
 .idea/

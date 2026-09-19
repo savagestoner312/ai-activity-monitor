@@ -1,0 +1,11 @@
+[package]
+name = "aimon-report"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "aimon-report"
+path = "src/main.rs"
+
+[dependencies]
+aimon-core = { path = "../aimon-core" }

@@ -1,0 +1,16 @@
+[package]
+name = "aimon-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+aimon-api-types = { path = "../aimon-api-types" }
+serde = { workspace = true }
+chrono = { workspace = true }
+rusqlite = { version = "0.32", features = ["bundled", "chrono"] }
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.52"
+sysinfo = "0.32"
+netstat2 = "0.11"
+dns-lookup = "2"

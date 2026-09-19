@@ -1,0 +1,11 @@
+[package]
+name = "aimon-collector"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "aimon-collector"
+path = "src/main.rs"
+
+[dependencies]
+aimon-core = { path = "../aimon-core" }
