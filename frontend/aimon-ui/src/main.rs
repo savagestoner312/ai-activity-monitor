@@ -1,7 +1,11 @@
-//! AI Activity Monitor - Leptos frontend, live-parity port of dashboard.html.
-//! Slider/dropdown history browsing lands in phase 5 — this phase only
-//! reproduces the original always-live-tail behavior against the new API.
-use aimon_api_types::{EventKind, StateSummary, UnifiedEvent};
+//! AI Activity Monitor - Leptos frontend.
+//! Phase 4 ported the original dashboard.html to live-parity. Phase 5 adds
+//! the history-browsing feature: a timeframe dropdown (window size) plus a
+//! look-back slider (window position in history). While the slider sits at
+//! "now" the view live-tails exactly like the original; dragging it back
+//! freezes the view on a fixed historical window and stops polling until
+//! the slider moves again.
+use aimon_api_types::{EventKind, MetaResponse, StateSummary, UnifiedEvent};
 use gloo_net::http::Request;
 use gloo_timers::future::TimeoutFuture;
 use leptos::prelude::*;
@@ -9,7 +13,10 @@ use leptos::task::spawn_local;
 use std::mem;
 
 const POLL_MS: u32 = 2000;
-const RIVER_SPAN_MS: f64 = 3_600_000.0; // last 60 minutes, matches the original hardcoded window
+const META_REFRESH_MS: u32 = 30_000;
+const SCRUB_DEBOUNCE_MS: u32 = 200;
+const LIVE_THRESHOLD: f64 = 0.999;
+const SLIDER_STEPS: i64 = 1000;
 
 fn main() {
     console_error_panic_hook::set_once();
@@ -37,6 +44,28 @@ fn js_time_ms(ts: &str) -> f64 {
     js_sys::Date::new(&wasm_bindgen::JsValue::from_str(ts)).get_time()
 }
 
+/// Inverse of `js_time_ms` — formats milliseconds back to the same
+/// `YYYY-MM-DDTHH:MM:SS` local-time shape the server writes and expects.
+fn ms_to_iso_local(ms: f64) -> String {
+    let d = js_sys::Date::new(&wasm_bindgen::JsValue::from_f64(ms));
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}",
+        d.get_full_year() as u32,
+        d.get_month() as u32 + 1,
+        d.get_date() as u32,
+        d.get_hours() as u32,
+        d.get_minutes() as u32,
+        d.get_seconds() as u32
+    )
+}
+
+fn fmt_local(ms: f64) -> String {
+    let d = js_sys::Date::new(&wasm_bindgen::JsValue::from_f64(ms));
+    let date = format!("{}/{}/{}", d.get_month() as u32 + 1, d.get_date() as u32, d.get_full_year() as u32);
+    let time = String::from(d.to_locale_time_string("en-US"));
+    format!("{date} {time}")
+}
+
 fn kind_color_var(kind: EventKind) -> &'static str {
     match kind {
         EventKind::Command => "var(--cmd)",
@@ -56,6 +85,46 @@ async fn fetch_json<T: for<'de> serde::Deserialize<'de>>(url: &str) -> Option<T>
 
 fn urlenc_ts(s: &str) -> String {
     s.replace(':', "%3A")
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WindowSize {
+    M15,
+    H1,
+    H6,
+    H24,
+    D7,
+}
+
+impl WindowSize {
+    const ALL: [WindowSize; 5] = [WindowSize::M15, WindowSize::H1, WindowSize::H6, WindowSize::H24, WindowSize::D7];
+
+    fn ms(self) -> f64 {
+        const MINUTE: f64 = 60_000.0;
+        const HOUR: f64 = 60.0 * MINUTE;
+        const DAY: f64 = 24.0 * HOUR;
+        match self {
+            WindowSize::M15 => 15.0 * MINUTE,
+            WindowSize::H1 => HOUR,
+            WindowSize::H6 => 6.0 * HOUR,
+            WindowSize::H24 => DAY,
+            WindowSize::D7 => 7.0 * DAY,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            WindowSize::M15 => "15m",
+            WindowSize::H1 => "1h",
+            WindowSize::H6 => "6h",
+            WindowSize::H24 => "24h",
+            WindowSize::D7 => "7d",
+        }
+    }
+
+    fn from_label(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|w| w.label() == s)
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -112,8 +181,27 @@ fn App() -> impl IntoView {
         error_msg: RwSignal::new(None),
     };
     let filter = RwSignal::new(FeedFilter::All);
-    let last_ts = RwSignal::new(None::<String>);
     let clock = RwSignal::new(String::new());
+
+    let window_size = RwSignal::new(WindowSize::H1);
+    let slider_pos = RwSignal::new(1.0_f64);
+    let meta = RwSignal::new(None::<MetaResponse>);
+    let is_live = Memo::new(move |_| slider_pos.get() >= LIVE_THRESHOLD);
+
+    // The window's right edge: real wall-clock "now" while live (so the
+    // river/labels advance in real time), or frozen at the slider's
+    // position once scrubbed away from live.
+    let view_end_ms = Memo::new(move |_| {
+        if is_live.get() {
+            return js_sys::Date::now();
+        }
+        let Some(m) = meta.get() else { return js_sys::Date::now() };
+        let now_ms = js_time_ms(&m.now);
+        let oldest_ms = m.oldest_ts.as_deref().map(js_time_ms).unwrap_or(now_ms);
+        let span = (now_ms - oldest_ms).max(1.0);
+        oldest_ms + slider_pos.get() * span
+    });
+    let view_start_ms = Memo::new(move |_| view_end_ms.get() - window_size.get().ms());
 
     // Clock ticks every second, independent of the data poll.
     spawn_local(async move {
@@ -123,49 +211,155 @@ fn App() -> impl IntoView {
         }
     });
 
-    // Data poll — mirrors the original dashboard.html's tick()/setInterval(tick,2000):
-    // fetch incremental events + full state + river every 2s, prepend new events.
+    // Slider bounds: refresh /api/meta periodically (oldest_ts barely
+    // moves; now advances, which matters for scaling the slider correctly).
     spawn_local(async move {
         loop {
-            let after = last_ts.get_untracked();
-            let events_url = match &after {
-                Some(ts) => format!("/api/events?start={}", urlenc_ts(ts)),
-                None => "/api/events".to_string(),
-            };
-            let ev = fetch_json::<Vec<UnifiedEvent>>(&events_url).await;
-            let st = fetch_json::<StateSummary>("/api/state").await;
+            if let Some(m) = fetch_json::<MetaResponse>("/api/meta").await {
+                meta.set(Some(m));
+            }
+            TimeoutFuture::new(META_REFRESH_MS).await;
+        }
+    });
 
-            match (ev, st) {
-                (Some(mut new_events), Some(st_val)) => {
-                    shared.connected.set(true);
-                    shared.error_msg.set(None);
-                    if let Some(first) = new_events.first() {
-                        last_ts.set(Some(first.ts.clone()));
+    // Fetch orchestration: an epoch counter lets a fresh run (triggered by
+    // window_size/slider_pos/meta changing) invalidate whatever the
+    // previous run is doing, without needing real task cancellation.
+    let epoch = RwSignal::new(0_u64);
+    Effect::new(move |_| {
+        let ws = window_size.get();
+        let pos = slider_pos.get();
+        let meta_val = meta.get();
+        epoch.update(|e| *e += 1);
+        let my_epoch = epoch.get_untracked();
+        let is_current = move || epoch.get_untracked() == my_epoch;
+
+        spawn_local(async move {
+            let live = pos >= LIVE_THRESHOLD;
+
+            if live {
+                // Live-tail loop, generalized from phase 4's hardcoded 1h
+                // window to whatever the dropdown currently selects.
+                let mut last_ts: Option<String> = None;
+                loop {
+                    if !is_current() {
+                        return;
                     }
-                    shared.events.update(|all| {
-                        let old = mem::take(all);
-                        new_events.extend(old);
-                        new_events.truncate(2000);
-                        *all = new_events;
-                    });
-                    shared.state.set(Some(st_val));
+                    let end_now = js_sys::Date::now();
+                    let start_ms = end_now - ws.ms();
+                    let (events_url, incremental) = match &last_ts {
+                        Some(ts) => (format!("/api/events?start={}&limit=2000", urlenc_ts(ts)), true),
+                        None => (
+                            format!(
+                                "/api/events?start={}&end={}&limit=2000",
+                                urlenc_ts(&ms_to_iso_local(start_ms)),
+                                urlenc_ts(&ms_to_iso_local(end_now))
+                            ),
+                            false,
+                        ),
+                    };
+                    let state_url = format!(
+                        "/api/state?start={}&end={}",
+                        urlenc_ts(&ms_to_iso_local(start_ms)),
+                        urlenc_ts(&ms_to_iso_local(end_now))
+                    );
+                    let ev = fetch_json::<Vec<UnifiedEvent>>(&events_url).await;
+                    let st = fetch_json::<StateSummary>(&state_url).await;
+                    if !is_current() {
+                        return;
+                    }
+                    match (ev, st) {
+                        (Some(mut new_events), Some(st_val)) => {
+                            shared.connected.set(true);
+                            shared.error_msg.set(None);
+                            if let Some(first) = new_events.first() {
+                                last_ts = Some(first.ts.clone());
+                            }
+                            if incremental {
+                                shared.events.update(|all| {
+                                    let old = mem::take(all);
+                                    new_events.extend(old);
+                                    new_events.truncate(2000);
+                                    *all = new_events;
+                                });
+                            } else {
+                                shared.events.set(new_events);
+                            }
+                            shared.state.set(Some(st_val));
+                        }
+                        _ => {
+                            shared.connected.set(false);
+                            shared.error_msg.set(Some("Dashboard can't reach the collector data".to_string()));
+                        }
+                    }
+                    TimeoutFuture::new(POLL_MS).await;
                 }
-                _ => {
-                    shared.connected.set(false);
-                    shared.error_msg.set(Some("Dashboard can't reach the collector data".to_string()));
+            } else {
+                // Historical scrub: debounce so dragging doesn't spam the
+                // API, then one fetch for the fixed window — no polling
+                // until the slider moves again.
+                TimeoutFuture::new(SCRUB_DEBOUNCE_MS).await;
+                if !is_current() {
+                    return;
+                }
+                let Some(m) = meta_val else { return };
+                let now_ms = js_time_ms(&m.now);
+                let oldest_ms = m.oldest_ts.as_deref().map(js_time_ms).unwrap_or(now_ms);
+                let span = (now_ms - oldest_ms).max(1.0);
+                let end_ms = oldest_ms + pos * span;
+                let start_ms = end_ms - ws.ms();
+                let start = ms_to_iso_local(start_ms);
+                let end = ms_to_iso_local(end_ms);
+                let events_url = format!("/api/events?start={}&end={}&limit=5000", urlenc_ts(&start), urlenc_ts(&end));
+                let state_url = format!("/api/state?start={}&end={}", urlenc_ts(&start), urlenc_ts(&end));
+                let ev = fetch_json::<Vec<UnifiedEvent>>(&events_url).await;
+                let st = fetch_json::<StateSummary>(&state_url).await;
+                if !is_current() {
+                    return;
+                }
+                match (ev, st) {
+                    (Some(new_events), Some(st_val)) => {
+                        shared.connected.set(true);
+                        shared.error_msg.set(None);
+                        shared.events.set(new_events);
+                        shared.state.set(Some(st_val));
+                    }
+                    _ => {
+                        shared.connected.set(false);
+                        shared.error_msg.set(Some("Dashboard can't reach the collector data".to_string()));
+                    }
                 }
             }
-            TimeoutFuture::new(POLL_MS).await;
+        });
+    });
+
+    let window_label = Memo::new(move |_| {
+        if is_live.get() {
+            format!("Live \u{2022} last {}", window_size.get().label())
+        } else {
+            format!("{} \u{2013} {}", fmt_local(view_start_ms.get()), fmt_local(view_end_ms.get()))
         }
     });
 
     view! {
         <Header shared=shared clock=clock/>
         <main>
-            <RiverLanesView events=shared.events/>
+            <TimeControls
+                window_size=window_size
+                slider_pos=slider_pos
+                meta=meta
+                is_live=is_live
+                window_label=window_label
+            />
+            <RiverLanesView
+                events=shared.events
+                window_size=window_size
+                is_live=is_live
+                view_end_ms=view_end_ms
+            />
             <LiveFeed events=shared.events filter=filter/>
             <aside>
-                <WindowCounts state=shared.state/>
+                <WindowCounts state=shared.state window_label=window_label/>
                 <EndpointsChart state=shared.state/>
             </aside>
         </main>
@@ -211,11 +405,69 @@ fn Header(shared: SharedState, clock: RwSignal<String>) -> impl IntoView {
 }
 
 #[component]
-fn RiverLanesView(events: RwSignal<Vec<UnifiedEvent>>) -> impl IntoView {
+fn TimeControls(
+    window_size: RwSignal<WindowSize>,
+    slider_pos: RwSignal<f64>,
+    meta: RwSignal<Option<MetaResponse>>,
+    is_live: Memo<bool>,
+    window_label: Memo<String>,
+) -> impl IntoView {
+    view! {
+        <section id="time-controls" style="grid-column:1/-1">
+            <div class="row" style="flex-wrap:wrap;gap:.75rem">
+                <select
+                    prop:value=move || window_size.get().label()
+                    on:change=move |ev| {
+                        let val = event_target_value(&ev);
+                        if let Some(ws) = WindowSize::from_label(&val) {
+                            window_size.set(ws);
+                        }
+                    }
+                >
+                    {WindowSize::ALL.iter().map(|&w| {
+                        let label = w.label();
+                        view! { <option value=label selected=move || window_size.get() == w>{label}</option> }
+                    }).collect_view()}
+                </select>
+                <input
+                    type="range"
+                    min="0"
+                    max=SLIDER_STEPS.to_string()
+                    step="1"
+                    style="flex:1;min-width:150px"
+                    disabled=move || meta.get().and_then(|m| m.oldest_ts).is_none()
+                    prop:value=move || (slider_pos.get() * SLIDER_STEPS as f64).round().to_string()
+                    on:input=move |ev| {
+                        let raw = event_target_value(&ev);
+                        if let Ok(v) = raw.parse::<f64>() {
+                            slider_pos.set((v / SLIDER_STEPS as f64).clamp(0.0, 1.0));
+                        }
+                    }
+                />
+                <button
+                    class:hot=move || !is_live.get()
+                    on:click=move |_| slider_pos.set(1.0)
+                    title="Jump back to live"
+                >
+                    "Live"
+                </button>
+                <span class="sub">{move || window_label.get()}</span>
+            </div>
+        </section>
+    }
+}
+
+#[component]
+fn RiverLanesView(
+    events: RwSignal<Vec<UnifiedEvent>>,
+    window_size: RwSignal<WindowSize>,
+    is_live: Memo<bool>,
+    view_end_ms: Memo<f64>,
+) -> impl IntoView {
     view! {
         <section id="river">
             <div class="row">
-                <h2>"Last 60 minutes" <span class="sub">"one row per AI tool"</span></h2>
+                <h2>{move || format!("Last {}", window_size.get().label())} <span class="sub">"one row per AI tool"</span></h2>
                 <div class="legend">
                     <span><i style="background:var(--cmd)"></i>"Command"</span>
                     <span><i style="background:var(--net)"></i>"Network"</span>
@@ -226,26 +478,27 @@ fn RiverLanesView(events: RwSignal<Vec<UnifiedEvent>>) -> impl IntoView {
             </div>
             <div id="lanes">
                 {move || {
-                    let now = js_sys::Date::now();
+                    let now = view_end_ms.get();
+                    let span_ms = window_size.get().ms();
                     let all = events.get();
                     // One tick per raw event within the window, colored by its
-                    // actual kind — matches the original exactly (it plotted
-                    // the same live event list used by the feed, not an
-                    // aggregated view).
+                    // actual kind — the same live event list the feed uses,
+                    // not a lossy aggregated view.
                     let mut lanes: std::collections::BTreeMap<String, Vec<(f64, &str, bool)>> = Default::default();
                     for e in &all {
                         let t = js_time_ms(&e.ts);
-                        if now - t > RIVER_SPAN_MS || t > now {
+                        if now - t > span_ms || t > now {
                             continue;
                         }
                         lanes.entry(nice_name(&e.tool)).or_default().push((t, kind_color_var(e.kind), e.flagged));
                     }
                     if lanes.is_empty() {
-                        view! { <div class="empty">"No AI activity in the last hour."</div> }.into_any()
+                        let msg = format!("No AI activity in the last {}.", window_size.get().label());
+                        view! { <div class="empty">{msg}</div> }.into_any()
                     } else {
                         lanes.into_iter().map(|(name, marks_data)| {
                             let marks: Vec<_> = marks_data.into_iter().map(|(t, color, flagged)| {
-                                let x = 100.0 - (now - t) / RIVER_SPAN_MS * 100.0;
+                                let x = 100.0 - (now - t) / span_ms * 100.0;
                                 let cls = if flagged { "mark flag" } else { "mark" };
                                 let bg = if flagged { "var(--flag)" } else { color };
                                 let style = format!("left:{x:.2}%;background:{bg}");
@@ -263,7 +516,11 @@ fn RiverLanesView(events: RwSignal<Vec<UnifiedEvent>>) -> impl IntoView {
             </div>
             <div class="axis">
                 <span></span>
-                <div><span>"60 min ago"</span><span>"45"</span><span>"30"</span><span>"15"</span><span>"Now"</span></div>
+                <div>
+                    <span>{move || format!("{} ago", window_size.get().label())}</span>
+                    <span>"75%"</span><span>"50%"</span><span>"25%"</span>
+                    <span>{move || if is_live.get() { "Now".to_string() } else { "".to_string() }}</span>
+                </div>
             </div>
         </section>
     }
@@ -316,10 +573,10 @@ fn LiveFeed(events: RwSignal<Vec<UnifiedEvent>>, filter: RwSignal<FeedFilter>) -
 }
 
 #[component]
-fn WindowCounts(state: RwSignal<Option<StateSummary>>) -> impl IntoView {
+fn WindowCounts(state: RwSignal<Option<StateSummary>>, window_label: Memo<String>) -> impl IntoView {
     view! {
         <section>
-            <h2>"Today"</h2>
+            <h2>{move || window_label.get()}</h2>
             <dl>
                 {move || {
                     let c = state.get().map(|s| s.counts).unwrap_or_default();
@@ -344,7 +601,7 @@ fn EndpointsChart(state: RwSignal<Option<StateSummary>>) -> impl IntoView {
                 {move || {
                     let endpoints = state.get().map(|s| s.endpoints).unwrap_or_default();
                     if endpoints.is_empty() {
-                        view! { <div class="empty">"No connections yet today."</div> }.into_any()
+                        view! { <div class="empty">"No connections in this window."</div> }.into_any()
                     } else {
                         let max = endpoints.iter().map(|e| e.n).max().unwrap_or(1).max(1);
                         endpoints.into_iter().map(|e| {
