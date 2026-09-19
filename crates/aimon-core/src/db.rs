@@ -11,7 +11,7 @@ CREATE TABLE IF NOT EXISTS net_events(ts TEXT, pid INT, name TEXT, raddr TEXT, r
 CREATE TABLE IF NOT EXISTS device_events(ts TEXT, device TEXT, app TEXT, started TEXT, stopped TEXT, is_ai INT);
 ";
 
-use rusqlite::{Connection, OpenFlags, Result};
+use rusqlite::{params, Connection, OpenFlags, Result};
 use std::path::Path;
 
 /// Open (creating if needed) the DB for writing, and ensure the schema exists.
@@ -36,6 +36,72 @@ pub fn open_ro(path: &Path) -> Result<Connection> {
 /// `datetime.now().isoformat(timespec="seconds")` byte-for-byte.
 pub fn now_str() -> String {
     chrono::Local::now().format("%Y-%m-%dT%H:%M:%S").to_string()
+}
+
+pub fn insert_process_event(
+    conn: &Connection,
+    ts: &str,
+    event: &str,
+    pid: u32,
+    name: &str,
+    exe: &str,
+    cmdline: &str,
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO process_events VALUES(?1,?2,?3,?4,?5,?6)",
+        params![ts, event, pid, name, exe, cmdline],
+    )?;
+    Ok(())
+}
+
+pub fn insert_child_event(
+    conn: &Connection,
+    ts: &str,
+    parent_pid: u32,
+    parent_name: &str,
+    pid: u32,
+    name: &str,
+    cmdline: &str,
+    flagged: bool,
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO child_events VALUES(?1,?2,?3,?4,?5,?6,?7)",
+        params![ts, parent_pid, parent_name, pid, name, cmdline, flagged as i64],
+    )?;
+    Ok(())
+}
+
+pub fn insert_net_event(
+    conn: &Connection,
+    ts: &str,
+    pid: u32,
+    name: &str,
+    raddr: &str,
+    rport: u16,
+    rhost: &str,
+    status: &str,
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO net_events VALUES(?1,?2,?3,?4,?5,?6,?7)",
+        params![ts, pid, name, raddr, rport, rhost, status],
+    )?;
+    Ok(())
+}
+
+pub fn insert_device_event(
+    conn: &Connection,
+    ts: &str,
+    device: &str,
+    app: &str,
+    started: &str,
+    stopped: &str,
+    is_ai: bool,
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO device_events VALUES(?1,?2,?3,?4,?5,?6)",
+        params![ts, device, app, started, stopped, is_ai as i64],
+    )?;
+    Ok(())
 }
 
 #[cfg(test)]
