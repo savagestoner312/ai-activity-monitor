@@ -192,6 +192,109 @@ pub fn river_for_range(conn: &Connection, start: &str, end: &str, bucket_seconds
         .collect())
 }
 
+// --- Daily report queries (aimon-report), typed ports of report.py's four
+// ad hoc `ts LIKE '<day>%'` queries. ---
+
+pub struct ProcessEventRow {
+    pub ts: String,
+    pub event: String,
+    pub name: String,
+    pub cmdline: String,
+}
+
+pub struct ChildEventRow {
+    pub ts: String,
+    pub parent_name: String,
+    pub name: String,
+    pub cmdline: String,
+    pub flagged: bool,
+}
+
+pub struct NetSummaryRow {
+    pub tool: String,
+    pub host: String,
+    pub port: u16,
+    pub conns: u32,
+    pub first: String,
+    pub last: String,
+}
+
+pub struct DeviceEventRow {
+    pub ts: String,
+    pub device: String,
+    pub app: String,
+    pub started: String,
+    pub stopped: String,
+    pub is_ai: bool,
+}
+
+pub fn process_events_for_day(conn: &Connection, day: &str) -> Result<Vec<ProcessEventRow>> {
+    let like = format!("{day}%");
+    let mut stmt = conn.prepare("SELECT ts,event,name,cmdline FROM process_events WHERE ts LIKE ?1 ORDER BY ts")?;
+    let result = stmt
+        .query_map(params![like], |r| {
+            Ok(ProcessEventRow { ts: r.get(0)?, event: r.get(1)?, name: r.get(2)?, cmdline: r.get(3)? })
+        })?
+        .collect();
+    result
+}
+
+pub fn child_events_for_day(conn: &Connection, day: &str) -> Result<Vec<ChildEventRow>> {
+    let like = format!("{day}%");
+    let mut stmt =
+        conn.prepare("SELECT ts,parent_name,name,cmdline,flagged FROM child_events WHERE ts LIKE ?1 ORDER BY ts")?;
+    let result = stmt
+        .query_map(params![like], |r| {
+            Ok(ChildEventRow {
+                ts: r.get(0)?,
+                parent_name: r.get(1)?,
+                name: r.get(2)?,
+                cmdline: r.get(3)?,
+                flagged: r.get::<_, i64>(4)? != 0,
+            })
+        })?
+        .collect();
+    result
+}
+
+pub fn net_summary_for_day(conn: &Connection, day: &str) -> Result<Vec<NetSummaryRow>> {
+    let like = format!("{day}%");
+    let sql = "SELECT name,COALESCE(NULLIF(rhost,''),raddr),rport,COUNT(*),MIN(ts),MAX(ts) FROM net_events
+               WHERE ts LIKE ?1 GROUP BY 1,2,3 ORDER BY 4 DESC";
+    let mut stmt = conn.prepare(sql)?;
+    let result = stmt
+        .query_map(params![like], |r| {
+            Ok(NetSummaryRow {
+                tool: r.get(0)?,
+                host: r.get(1)?,
+                port: r.get(2)?,
+                conns: r.get(3)?,
+                first: r.get(4)?,
+                last: r.get(5)?,
+            })
+        })?
+        .collect();
+    result
+}
+
+pub fn device_events_for_day(conn: &Connection, day: &str) -> Result<Vec<DeviceEventRow>> {
+    let like = format!("{day}%");
+    let mut stmt = conn.prepare("SELECT ts,device,app,started,stopped,is_ai FROM device_events WHERE ts LIKE ?1 ORDER BY ts")?;
+    let result = stmt
+        .query_map(params![like], |r| {
+            Ok(DeviceEventRow {
+                ts: r.get(0)?,
+                device: r.get(1)?,
+                app: r.get(2)?,
+                started: r.get(3)?,
+                stopped: r.get(4)?,
+                is_ai: r.get::<_, i64>(5)? != 0,
+            })
+        })?
+        .collect();
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -274,5 +377,25 @@ mod tests {
         let total: u32 = claude.buckets.iter().map(|b| b.n).sum();
         assert_eq!(total, 3);
         assert!(claude.buckets.iter().any(|b| b.flagged));
+    }
+
+    #[test]
+    fn report_queries_scope_to_the_given_day() {
+        let conn = seeded_db();
+        let procs = process_events_for_day(&conn, "2026-09-19").unwrap();
+        assert_eq!(procs.len(), 3);
+        assert_eq!(process_events_for_day(&conn, "2026-09-20").unwrap().len(), 0);
+
+        let kids = child_events_for_day(&conn, "2026-09-19").unwrap();
+        assert_eq!(kids.len(), 2);
+        assert!(kids.iter().all(|k| k.flagged));
+
+        let nets = net_summary_for_day(&conn, "2026-09-19").unwrap();
+        assert_eq!(nets.len(), 1);
+        assert_eq!(nets[0].conns, 1);
+
+        let devs = device_events_for_day(&conn, "2026-09-19").unwrap();
+        assert_eq!(devs.len(), 1);
+        assert_eq!(devs[0].device, "microphone");
     }
 }

@@ -9,3 +9,5 @@ path = "src/main.rs"
 
 [dependencies]
 aimon-core = { path = "../aimon-core" }
+chrono = { workspace = true }
+webbrowser = "1"
