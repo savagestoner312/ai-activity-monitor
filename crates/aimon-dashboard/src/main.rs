@@ -2,14 +2,48 @@
 //! Reads the same SQLite DB the collector writes. Replaces the Python
 //! dashboard's tail-only `/api/events?after=` model with range-bounded
 //! queries so the frontend can browse history, not just live-tail.
+//!
+//! No console window at logon, matching pythonw.exe's behavior in the
+//! original — this also means stdout/println! go nowhere in practice.
+#![windows_subsystem = "windows"]
+
 use aimon_api_types::{RiverResponse, StateSummary, UnifiedEvent};
 use aimon_core::{db, paths, queries};
-use axum::{extract::Query, extract::State, routing::get, Json, Router};
+use axum::{
+    extract::Query, extract::State, http::StatusCode, http::Uri, response::IntoResponse, routing::get, Json, Router,
+};
 use chrono::{Duration, Local};
+use rust_embed::RustEmbed;
 use serde::Deserialize;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
+
+/// The Leptos frontend, built by `trunk build --release` into
+/// `frontend/aimon-ui/dist` and embedded into this binary at compile time —
+/// deployment is just "copy the exe," no separate dist folder to manage.
+#[derive(RustEmbed)]
+#[folder = "../../frontend/aimon-ui/dist"]
+struct Assets;
+
+fn content_type_for(path: &str) -> &'static str {
+    match path.rsplit('.').next().unwrap_or("") {
+        "html" => "text/html; charset=utf-8",
+        "js" => "text/javascript; charset=utf-8",
+        "wasm" => "application/wasm",
+        "css" => "text/css; charset=utf-8",
+        _ => "application/octet-stream",
+    }
+}
+
+async fn static_asset(uri: Uri) -> impl IntoResponse {
+    let path = uri.path().trim_start_matches('/');
+    let path = if path.is_empty() { "index.html" } else { path };
+    match Assets::get(path) {
+        Some(file) => ([("content-type", content_type_for(path))], file.data.into_owned()).into_response(),
+        None => (StatusCode::NOT_FOUND, "not found").into_response(),
+    }
+}
 
 struct AppState {
     db_path: PathBuf,
@@ -87,11 +121,11 @@ async fn get_river(State(state): State<Arc<AppState>>, Query(q): Query<RiverQuer
 async fn main() {
     let state = Arc::new(AppState { db_path: paths::db_path() });
     let app = Router::new()
-        .route("/", get(|| async { "AI Activity Monitor — frontend lands in phase 4" }))
         .route("/api/meta", get(get_meta))
         .route("/api/events", get(get_events))
         .route("/api/state", get(get_state))
         .route("/api/river", get(get_river))
+        .fallback(static_asset)
         .with_state(state);
 
     let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, 8765));

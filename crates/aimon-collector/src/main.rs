@@ -2,6 +2,11 @@
 //! Polls every few seconds and logs to SQLite: AI tool processes starting/
 //! stopping, child processes they spawn, network connections they make, and
 //! mic/camera usage by any app. Direct port of the Python collector's main().
+//!
+//! No console window at logon, matching pythonw.exe's behavior in the
+//! original — this also means stdout/println! go nowhere in practice.
+#![windows_subsystem = "windows"]
+
 use aimon_core::{db, net::NetTracker, paths, process::ProcSnapshot, registry, rules};
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;

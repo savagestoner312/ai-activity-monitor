@@ -11,11 +11,23 @@ See what AI tools are doing on your Windows PC, live: which ones are running, wh
 - Network endpoints each AI tool connects to
 - Microphone and camera use by any app, from Windows' own privacy records
 
+Browse history with the timeframe dropdown and look-back slider — not just live activity, the full range you've collected. Drag back to freeze on a past window; jump back to "Live" any time.
+
 All data stays local in `%LOCALAPPDATA%\AIMonitor\aimon.db`. The dashboard listens on `127.0.0.1` only.
 
 ## Quick start
 
-Requires Windows 10/11 and Python 3.10+ (check "Add to PATH" when installing).
+Requires Windows 10/11 and the Rust toolchain (MSVC), plus `trunk` for building the frontend:
+
+```powershell
+winget install --id Rustlang.Rustup -e
+rustup target add wasm32-unknown-unknown
+cargo install trunk --locked
+```
+
+(`cargo install trunk` needs the MSVC linker — if it fails with `link.exe not found`, install the Visual Studio Build Tools with the "Desktop development with C++" workload first.)
+
+Then:
 
 ```powershell
 git clone <repo-url>
@@ -23,14 +35,13 @@ cd ai-activity-monitor
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-This installs `psutil`, registers three scheduled tasks that run at logon (collector, dashboard, 9 PM daily report), and opens the dashboard at http://127.0.0.1:8765.
+This builds the frontend and three release binaries, registers three scheduled tasks that run at logon (collector, dashboard, 9 PM daily report), and opens the dashboard at http://127.0.0.1:8765.
 
 To run manually instead, use two terminals:
 
 ```powershell
-pip install -r requirements.txt
-python src\collector.py
-python src\dashboard.py
+cargo run --release -p aimon-collector
+cargo run --release -p aimon-dashboard
 ```
 
 To uninstall:
@@ -43,13 +54,15 @@ To uninstall:
 
 | Path | Purpose |
 |---|---|
-| `src/collector.py` | Polls every 3 seconds and writes events to SQLite |
-| `src/dashboard.py` | Local web server and JSON API (`/api/state`, `/api/events`) |
-| `src/dashboard.html` | Live dashboard UI (no external dependencies) |
-| `src/report.py` | Static daily HTML report |
-| `install.ps1` | Scheduled task setup |
+| `crates/aimon-collector` | Polls every 3 seconds and writes events to SQLite |
+| `crates/aimon-dashboard` | Local web server, JSON API (`/api/state`, `/api/events`, `/api/meta`, `/api/river`), and the embedded frontend |
+| `crates/aimon-report` | Static daily HTML report |
+| `crates/aimon-core` | Shared schema, DB access, process/network/registry monitoring, AI-tool matching rules |
+| `crates/aimon-api-types` | Wire types shared between the dashboard server and the frontend |
+| `frontend/aimon-ui` | Leptos (Rust/WASM) dashboard UI, built with `trunk` |
+| `install.ps1` | Build + scheduled task setup |
 
-To add AI tools to watch, edit `AI_NAME_MATCH` / `AI_CMDLINE_MATCH` at the top of `src/collector.py`.
+To add AI tools to watch, edit `AI_NAME_MATCH` / `AI_CMDLINE_MATCH` in `crates/aimon-core/src/rules.rs`.
 
 ## Known limits
 

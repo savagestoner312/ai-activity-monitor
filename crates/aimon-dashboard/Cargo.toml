@@ -16,3 +16,4 @@ chrono = { workspace = true }
 rusqlite = { version = "0.32", features = ["bundled"] }
 axum = "0.7"
 tokio = { version = "1", features = ["rt", "net", "macros"] }
+rust-embed = "8"
