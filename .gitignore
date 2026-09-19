@@ -1,0 +1,16 @@
+# Never commit captured activity data
+*.db
+*.db-journal
+*.sqlite
+reports/
+AIMonitor/
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+# Editors / OS
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store

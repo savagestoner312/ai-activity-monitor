@@ -1,0 +1,112 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AI activity on this PC</title>
+<style>
+:root{--bg:#16202e;--panel:#1c2838;--line:#2a3a50;--fg:#dfe7f1;--muted:#8a9bb0;
+--cmd:#f2a541;--net:#5bc0eb;--proc:#b9a7ff;--dev:#7ee0b5;--flag:#ff6b7d;
+--ui:"Segoe UI Variable Text","Segoe UI",system-ui,sans-serif;--code:"Cascadia Mono",Consolas,monospace}
+@media (prefers-color-scheme:light){:root{--bg:#eef2f7;--panel:#fff;--line:#d6dde8;--fg:#1a2433;--muted:#5d6b7e;
+--cmd:#c77a0a;--net:#1583b8;--proc:#6b55e0;--dev:#12925f;--flag:#d6334a}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.45 var(--ui)}
+header{display:flex;align-items:center;gap:1rem;flex-wrap:wrap;padding:1rem 1.5rem;border-bottom:1px solid var(--line)}
+h1{font-size:1.15rem;font-weight:600;margin:0}
+.pulse{width:9px;height:9px;border-radius:50%;background:var(--dev);box-shadow:0 0 0 0 var(--dev);animation:p 2s infinite}
+.pulse.off{background:var(--flag);animation:none}
+@keyframes p{70%{box-shadow:0 0 0 8px transparent}}
+@media (prefers-reduced-motion:reduce){.pulse{animation:none}}
+#clock{color:var(--muted);font-variant-numeric:tabular-nums}
+#live{display:flex;gap:.5rem;flex-wrap:wrap;margin-left:auto}
+.chip{border:1px solid var(--line);border-radius:999px;padding:.2rem .7rem;font-size:.82rem;background:var(--panel)}
+.chip.hot{border-color:var(--flag);color:var(--flag);font-weight:600}
+main{padding:1.25rem 1.5rem;display:grid;gap:1.25rem;grid-template-columns:minmax(0,1fr) 300px}
+@media (max-width:900px){main{grid-template-columns:1fr}}
+section{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:1rem 1.1rem}
+h2{font-size:.95rem;font-weight:600;margin:0 0 .75rem}
+.sub{color:var(--muted);font-weight:400;margin-left:.4rem}
+#river{grid-column:1/-1}
+.lane{display:grid;grid-template-columns:160px 1fr;align-items:center;height:34px;border-top:1px solid var(--line)}
+.lane:first-of-type{border-top:0}
+.lane b{font-weight:500;font-size:.85rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding-right:.5rem}
+.track{position:relative;height:100%}
+.mark{position:absolute;top:9px;width:4px;height:16px;border-radius:2px;transform:translateX(-2px)}
+.mark.flag{top:6px;height:22px;width:6px;background:var(--flag)!important;box-shadow:0 0 0 2px var(--panel)}
+.axis{display:grid;grid-template-columns:160px 1fr;color:var(--muted);font-size:.75rem;margin-top:.25rem}
+.axis div{display:flex;justify-content:space-between}
+.legend{display:flex;gap:1rem;color:var(--muted);font-size:.8rem;margin-left:auto}
+.legend i{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:.35rem}
+.row{display:flex;align-items:center;gap:.5rem}
+#filters{display:flex;gap:.35rem;margin-bottom:.6rem;flex-wrap:wrap}
+#filters button{font:inherit;font-size:.82rem;background:none;color:var(--muted);border:1px solid var(--line);border-radius:6px;padding:.2rem .6rem;cursor:pointer}
+#filters button[aria-pressed=true]{color:var(--fg);border-color:var(--fg)}
+button:focus-visible{outline:2px solid var(--net);outline-offset:2px}
+#feed{max-height:460px;overflow:auto;margin:0;padding:0;list-style:none}
+#feed li{display:grid;grid-template-columns:62px 8px 130px minmax(0,1fr);gap:.6rem;align-items:baseline;padding:.35rem 0;border-top:1px solid var(--line)}
+#feed li.new{animation:in 1.2s}
+@keyframes in{from{background:color-mix(in srgb,var(--net) 15%,transparent)}}
+#feed time{color:var(--muted);font-variant-numeric:tabular-nums;font-size:.8rem}
+#feed .dot{width:8px;height:8px;border-radius:50%;align-self:center}
+#feed .tool{font-size:.82rem;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#feed code{font:12.5px var(--code);word-break:break-all}
+#feed li.flag code{color:var(--flag)}
+dl{margin:0;display:grid;grid-template-columns:1fr auto;row-gap:.5rem}
+dt{color:var(--muted)}dd{margin:0;font-weight:600;font-variant-numeric:tabular-nums;text-align:right}
+dd.warn{color:var(--flag)}
+.ep{margin-top:.55rem}.ep span{display:flex;justify-content:space-between;font-size:.8rem}
+.bar{height:4px;background:var(--line);border-radius:2px;margin-top:3px}.bar i{display:block;height:100%;background:var(--net);border-radius:2px}
+.empty{color:var(--muted);padding:1rem 0}
+aside{display:grid;gap:1.25rem;align-content:start}
+</style></head><body>
+<header><span class="pulse" id="pulse"></span><h1>AI activity on this PC</h1><span id="clock"></span>
+<div id="live" aria-live="polite"></div></header>
+<main>
+<section id="river"><div class="row"><h2>Last 60 minutes<span class="sub">one row per AI tool</span></h2>
+<div class="legend"><span><i style="background:var(--cmd)"></i>Command</span><span><i style="background:var(--net)"></i>Network</span>
+<span><i style="background:var(--proc)"></i>Start/stop</span><span><i style="background:var(--dev)"></i>Mic/camera</span><span><i style="background:var(--flag)"></i>Flagged</span></div></div>
+<div id="lanes"></div><div class="axis"><span></span><div><span>60 min ago</span><span>45</span><span>30</span><span>15</span><span>Now</span></div></div></section>
+<section><h2>Live feed</h2>
+<div id="filters" role="group" aria-label="Filter feed">
+<button aria-pressed="true" data-f="all">Everything</button><button aria-pressed="false" data-f="flag">Flagged</button>
+<button aria-pressed="false" data-f="command">Commands</button><button aria-pressed="false" data-f="network">Network</button>
+<button aria-pressed="false" data-f="device">Mic/camera</button><button aria-pressed="false" data-f="process">Start/stop</button></div>
+<ul id="feed"></ul></section>
+<aside><section><h2>Today</h2><dl id="counts"></dl></section>
+<section><h2>Who they're talking to</h2><div id="eps"></div></section></aside>
+</main>
+<script>
+const color={command:"var(--cmd)",network:"var(--net)",process:"var(--proc)",device:"var(--dev)"};
+let all=[],filter="all",lastTs=null,firstLoad=true;
+const nice=t=>String(t??"").split("\\").pop().replace(/_[a-z0-9]{13}$/,"");
+const esc=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const iso=d=>new Date(d.getTime()-d.getTimezoneOffset()*6e4).toISOString().slice(0,19);
+document.getElementById("filters").onclick=e=>{const b=e.target.closest("button");if(!b)return;filter=b.dataset.f;
+ document.querySelectorAll("#filters button").forEach(x=>x.setAttribute("aria-pressed",x===b));renderFeed(new Set())};
+function renderFeed(fresh){const f=document.getElementById("feed");
+ const rows=all.filter(e=>filter==="all"||(filter==="flag"?e.flagged:e.kind===filter)).slice(0,250);
+ f.innerHTML=rows.length?rows.map(e=>`<li class="${e.flagged?"flag ":""}${fresh.has(e)?"new":""}"><time>${e.ts.slice(11)}</time>
+ <span class="dot" style="background:${e.flagged?"var(--flag)":color[e.kind]}"></span><span class="tool" title="${esc(e.tool)}">${esc(nice(e.tool))}</span>
+ <code>${esc(e.detail)}</code></li>`).join(""):`<li class="empty">Nothing here yet. Open an AI tool and activity will show up within a few seconds.</li>`}
+function renderRiver(){const now=Date.now(),span=36e5,lanes={};
+ all.forEach(e=>{const t=new Date(e.ts).getTime();if(now-t>span)return;(lanes[nice(e.tool)]??=[]).push({e,x:100-(now-t)/span*100})});
+ const el=document.getElementById("lanes"),names=Object.keys(lanes).sort();
+ el.innerHTML=names.length?names.map(n=>`<div class="lane"><b title="${esc(n)}">${esc(n)}</b><div class="track">${
+  lanes[n].map(({e,x})=>`<span class="mark ${e.flagged?"flag":""}" style="left:${x.toFixed(2)}%;background:${color[e.kind]}" title="${e.ts.slice(11)} ${esc(e.detail)}"></span>`).join("")}</div></div>`).join("")
+  :`<div class="empty">No AI activity in the last hour.</div>`}
+async function tick(){try{
+ const after=lastTs||iso(new Date(Date.now()-36e5));
+ const [ev,st]=await Promise.all([fetch("/api/events?after="+encodeURIComponent(after)).then(r=>r.json()),fetch("/api/state").then(r=>r.json())]);
+ if(st.error)throw new Error(st.error);
+ const fresh=new Set(firstLoad?[]:ev);all=ev.concat(all).slice(0,2000);if(ev.length)lastTs=ev[0].ts;firstLoad=false;
+ renderFeed(fresh);renderRiver();
+ const c=st.counts;document.getElementById("counts").innerHTML=
+  `<dt>AI tools launched</dt><dd>${c.launched}</dd><dt>Commands run by AI</dt><dd>${c.commands}</dd>
+   <dt>Flagged commands</dt><dd class="${c.flagged?"warn":""}">${c.flagged}</dd><dt>Endpoints contacted</dt><dd>${c.endpoints}</dd>`;
+ const max=Math.max(1,...st.endpoints.map(x=>x.n));
+ document.getElementById("eps").innerHTML=st.endpoints.length?st.endpoints.map(x=>`<div class="ep"><span><span>${esc(x.host)}</span><span>${x.n}</span></span>
+  <div class="bar"><i style="width:${x.n/max*100}%"></i></div></div>`).join(""):`<div class="empty">No connections yet today.</div>`;
+ document.getElementById("live").innerHTML=st.devices.map(d=>`<span class="chip hot">${d.device==="webcam"?"Camera":"Mic"} in use: ${esc(nice(d.app))}</span>`).join("")+
+  (st.running.length?st.running.map(r=>`<span class="chip">${esc(r.name)} running</span>`).join(""):`<span class="chip">No AI tools running</span>`);
+ document.getElementById("pulse").className="pulse";
+}catch(err){document.getElementById("pulse").className="pulse off";
+ document.getElementById("live").innerHTML=`<span class="chip hot">${esc(err.message||"Dashboard can't reach the collector data")}</span>`}}
+setInterval(()=>document.getElementById("clock").textContent=new Date().toLocaleTimeString(),1000);
+tick();setInterval(tick,2000);
+</script></body></html>
