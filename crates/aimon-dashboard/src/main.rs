@@ -7,7 +7,7 @@
 //! original — this also means stdout/println! go nowhere in practice.
 #![windows_subsystem = "windows"]
 
-use aimon_api_types::{RiverResponse, StateSummary, UnifiedEvent};
+use aimon_api_types::{PerfSummary, PerfTotal, RiverResponse, StateSummary, UnifiedEvent};
 use aimon_core::{db, paths, queries};
 use axum::{
     extract::Query, extract::State, http::StatusCode, http::Uri, response::IntoResponse, routing::get, Json, Router,
@@ -55,6 +55,10 @@ fn open_ro(state: &AppState) -> rusqlite::Result<rusqlite::Connection> {
 
 fn hours_ago(hours: i64) -> String {
     (Local::now() - Duration::hours(hours)).format("%Y-%m-%dT%H:%M:%S").to_string()
+}
+
+fn seconds_ago(secs: i64) -> String {
+    (Local::now() - Duration::seconds(secs)).format("%Y-%m-%dT%H:%M:%S").to_string()
 }
 
 #[derive(Deserialize)]
@@ -117,6 +121,37 @@ async fn get_river(State(state): State<Arc<AppState>>, Query(q): Query<RiverQuer
     Json(RiverResponse { lanes })
 }
 
+#[derive(Deserialize)]
+struct PerfQuery {
+    start: Option<String>,
+    end: Option<String>,
+}
+
+async fn get_perf(State(state): State<Arc<AppState>>, Query(q): Query<PerfQuery>) -> Json<PerfSummary> {
+    let now = db::now_str();
+    let end = q.end.unwrap_or_else(|| now.clone());
+    let start = q.start.unwrap_or_else(|| hours_ago(1));
+    let is_live = end >= now;
+    // Live: a narrow trailing window (a couple of poll cycles) so a stopped
+    // tool ages out naturally instead of showing its last-ever reading
+    // forever. Historical: the full viewed window, averaged.
+    let (qstart, qend) = if is_live { (seconds_ago(8), now.clone()) } else { (start, end.clone()) };
+    let tools = open_ro(&state).and_then(|c| queries::perf_in_range(&c, &qstart, &qend)).unwrap_or_default();
+    let gpu_available = tools.iter().any(|t| t.gpu_pct.is_some());
+    let total = tools.iter().fold(PerfTotal::default(), |mut acc, t| {
+        acc.proc_count += t.proc_count;
+        acc.cpu_pct += t.cpu_pct;
+        acc.mem_bytes += t.mem_bytes;
+        acc.gpu_pct = match (acc.gpu_pct, t.gpu_pct) {
+            (a, None) => a,
+            (None, b) => b,
+            (Some(a), Some(b)) => Some(a + b),
+        };
+        acc
+    });
+    Json(PerfSummary { ts: if is_live { now } else { end }, is_live, gpu_available, total, tools })
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
     let state = Arc::new(AppState { db_path: paths::db_path() });
@@ -125,6 +160,7 @@ async fn main() {
         .route("/api/events", get(get_events))
         .route("/api/state", get(get_state))
         .route("/api/river", get(get_river))
+        .route("/api/perf", get(get_perf))
         .fallback(static_asset)
         .with_state(state);
 

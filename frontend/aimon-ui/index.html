@@ -7,9 +7,11 @@
   <style>
 :root{--bg:#16202e;--panel:#1c2838;--line:#2a3a50;--fg:#dfe7f1;--muted:#8a9bb0;
 --cmd:#f2a541;--net:#5bc0eb;--proc:#b9a7ff;--dev:#7ee0b5;--flag:#ff6b7d;
+--vu-lo:#3ddc73;--vu-mid:#f2c14e;--vu-hi:#ff5c5c;
 --ui:"Segoe UI Variable Text","Segoe UI",system-ui,sans-serif;--code:"Cascadia Mono",Consolas,monospace}
 @media (prefers-color-scheme:light){:root{--bg:#eef2f7;--panel:#fff;--line:#d6dde8;--fg:#1a2433;--muted:#5d6b7e;
---cmd:#c77a0a;--net:#1583b8;--proc:#6b55e0;--dev:#12925f;--flag:#d6334a}}
+--cmd:#c77a0a;--net:#1583b8;--proc:#6b55e0;--dev:#12925f;--flag:#d6334a;
+--vu-lo:#1f9d4c;--vu-mid:#b8860b;--vu-hi:#c0392b}}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.45 var(--ui)}
 header{display:flex;align-items:center;gap:1rem;flex-wrap:wrap;padding:1rem 1.5rem;border-bottom:1px solid var(--line)}
 h1{font-size:1.15rem;font-weight:600;margin:0}
@@ -60,6 +62,20 @@ aside{display:grid;gap:1.25rem;align-content:start}
 #time-controls button{font:inherit;font-size:.82rem;background:none;color:var(--muted);border:1px solid var(--line);border-radius:6px;padding:.25rem .7rem;cursor:pointer}
 #time-controls button.hot{color:var(--flag);border-color:var(--flag)}
 #time-controls input[type=range]{accent-color:var(--net)}
+#perf .perf-mode-label{display:block;margin-bottom:.4rem}
+.perf-rows{display:grid;gap:.5rem}
+.perf-row{display:grid;grid-template-columns:150px 34px repeat(3,1fr);align-items:end;gap:.9rem}
+.perf-row.total{font-weight:600;padding-bottom:.35rem}
+.perf-row b{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding-bottom:2px}
+.perf-count{color:var(--muted);font-size:.72rem;padding-bottom:2px}
+.perf-divider{border-top:1px solid var(--line);margin:.15rem 0 .35rem}
+.vu-metric{display:flex;flex-direction:column;align-items:flex-start;gap:.3rem}
+.vu-ladder{display:flex;flex-direction:column-reverse;gap:1px;height:40px}
+.vu-seg{width:9px;height:3px;border-radius:1px;opacity:.15;transition:opacity .15s}
+.vu-seg.lit{opacity:1;box-shadow:0 0 4px currentColor}
+.vu-label{font:11.5px var(--code);color:var(--muted);white-space:nowrap}
+.vu-label.muted{opacity:.6}
+.perf-avg{font:12.5px var(--code);color:var(--muted)}
   </style>
 </head>
 <body></body>

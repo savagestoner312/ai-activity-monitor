@@ -5,7 +5,7 @@
 //! "now" the view live-tails exactly like the original; dragging it back
 //! freezes the view on a fixed historical window and stops polling until
 //! the slider moves again.
-use aimon_api_types::{EventKind, MetaResponse, StateSummary, UnifiedEvent};
+use aimon_api_types::{EventKind, MetaResponse, PerfSummary, StateSummary, UnifiedEvent};
 use gloo_net::http::Request;
 use gloo_timers::future::TimeoutFuture;
 use leptos::prelude::*;
@@ -168,6 +168,7 @@ const ALL_FILTERS: [FeedFilter; 6] =
 struct SharedState {
     events: RwSignal<Vec<UnifiedEvent>>,
     state: RwSignal<Option<StateSummary>>,
+    perf: RwSignal<Option<PerfSummary>>,
     connected: RwSignal<bool>,
     error_msg: RwSignal<Option<String>>,
 }
@@ -177,6 +178,7 @@ fn App() -> impl IntoView {
     let shared = SharedState {
         events: RwSignal::new(Vec::new()),
         state: RwSignal::new(None),
+        perf: RwSignal::new(None),
         connected: RwSignal::new(true),
         error_msg: RwSignal::new(None),
     };
@@ -265,6 +267,7 @@ fn App() -> impl IntoView {
                     );
                     let ev = fetch_json::<Vec<UnifiedEvent>>(&events_url).await;
                     let st = fetch_json::<StateSummary>(&state_url).await;
+                    let pf = fetch_json::<PerfSummary>("/api/perf").await;
                     if !is_current() {
                         return;
                     }
@@ -286,6 +289,9 @@ fn App() -> impl IntoView {
                                 shared.events.set(new_events);
                             }
                             shared.state.set(Some(st_val));
+                            if pf.is_some() {
+                                shared.perf.set(pf);
+                            }
                         }
                         _ => {
                             shared.connected.set(false);
@@ -312,8 +318,10 @@ fn App() -> impl IntoView {
                 let end = ms_to_iso_local(end_ms);
                 let events_url = format!("/api/events?start={}&end={}&limit=5000", urlenc_ts(&start), urlenc_ts(&end));
                 let state_url = format!("/api/state?start={}&end={}", urlenc_ts(&start), urlenc_ts(&end));
+                let perf_url = format!("/api/perf?start={}&end={}", urlenc_ts(&start), urlenc_ts(&end));
                 let ev = fetch_json::<Vec<UnifiedEvent>>(&events_url).await;
                 let st = fetch_json::<StateSummary>(&state_url).await;
+                let pf = fetch_json::<PerfSummary>(&perf_url).await;
                 if !is_current() {
                     return;
                 }
@@ -323,6 +331,7 @@ fn App() -> impl IntoView {
                         shared.error_msg.set(None);
                         shared.events.set(new_events);
                         shared.state.set(Some(st_val));
+                        shared.perf.set(pf);
                     }
                     _ => {
                         shared.connected.set(false);
@@ -351,6 +360,7 @@ fn App() -> impl IntoView {
                 is_live=is_live
                 window_label=window_label
             />
+            <PerfMeters perf=shared.perf/>
             <RiverLanesView
                 events=shared.events
                 window_size=window_size
@@ -522,6 +532,145 @@ fn RiverLanesView(
                     <span>{move || if is_live.get() { "Now".to_string() } else { "".to_string() }}</span>
                 </div>
             </div>
+        </section>
+    }
+}
+
+const VU_SEGMENTS: usize = 12;
+/// Bar-fill reference ceiling only ("visually full") — the true byte value
+/// is always printed underneath, this constant never hides or misrepresents
+/// it, just scales the ladder.
+const MEM_CEILING_BYTES: f64 = 4.0 * 1024.0 * 1024.0 * 1024.0;
+
+fn fmt_mem(bytes: f64) -> String {
+    if bytes >= 1024.0 * 1024.0 * 1024.0 {
+        format!("{:.2} GB", bytes / 1024.0 / 1024.0 / 1024.0)
+    } else {
+        format!("{:.0} MB", bytes / 1024.0 / 1024.0)
+    }
+}
+
+/// A small vertical stack of fixed-height segments (bottom-to-top in DOM
+/// order, `column-reverse` in CSS draws them growing up from the bottom
+/// like a real VU meter). Segment color is fixed by position (green/amber/
+/// red bands); the reading decides how many are "lit" — a period-accurate
+/// LED-ladder look, not a single bar whose fill color shifts with the value.
+fn vu_ladder(pct: f64) -> Vec<impl IntoView> {
+    let pct = pct.clamp(0.0, 100.0);
+    let lit_count = ((pct / 100.0) * VU_SEGMENTS as f64).ceil() as usize;
+    (0..VU_SEGMENTS)
+        .map(|j| {
+            let color = if j < VU_SEGMENTS * 6 / 10 {
+                "var(--vu-lo)"
+            } else if j < VU_SEGMENTS * 85 / 100 {
+                "var(--vu-mid)"
+            } else {
+                "var(--vu-hi)"
+            };
+            let cls = if j < lit_count { "vu-seg lit" } else { "vu-seg" };
+            let style = format!("background:{color};color:{color}");
+            view! { <span class={cls} style={style}></span> }
+        })
+        .collect()
+}
+
+fn perf_row(name: &str, proc_count: u32, cpu_pct: f64, mem_bytes: f64, gpu_pct: Option<f64>, live: bool, gpu_available: bool, total: bool) -> impl IntoView {
+    let name_owned = name.to_string();
+    let row_class = if total { "perf-row total" } else { "perf-row" };
+
+    if live {
+        let mem_fill_pct = (mem_bytes / MEM_CEILING_BYTES * 100.0).min(100.0);
+        let gpu_block = if !gpu_available {
+            view! {}.into_any()
+        } else if let Some(g) = gpu_pct {
+            view! {
+                <div class="vu-metric">
+                    <div class="vu-ladder">{vu_ladder(g)}</div>
+                    <span class="vu-label">{format!("GPU {g:.1}%")}</span>
+                </div>
+            }
+            .into_any()
+        } else {
+            view! { <div class="vu-metric"><span class="vu-label muted">"GPU n/a"</span></div> }.into_any()
+        };
+        view! {
+            <div class={row_class}>
+                <b title={name_owned.clone()}>{name_owned.clone()}</b>
+                <span class="perf-count">{format!("{proc_count}p")}</span>
+                <div class="vu-metric">
+                    <div class="vu-ladder">{vu_ladder(cpu_pct)}</div>
+                    <span class="vu-label">{format!("CPU {cpu_pct:.1}%")}</span>
+                </div>
+                <div class="vu-metric">
+                    <div class="vu-ladder">{vu_ladder(mem_fill_pct)}</div>
+                    <span class="vu-label">{fmt_mem(mem_bytes)}</span>
+                </div>
+                {gpu_block}
+            </div>
+        }
+        .into_any()
+    } else {
+        let gpu_text = if !gpu_available {
+            String::new()
+        } else {
+            match gpu_pct {
+                Some(g) => format!("  GPU {g:.1}%"),
+                None => "  GPU n/a".to_string(),
+            }
+        };
+        let text = format!("CPU {cpu_pct:.1}%  MEM {}{}", fmt_mem(mem_bytes), gpu_text);
+        view! {
+            <div class={row_class}>
+                <b title={name_owned.clone()}>{name_owned.clone()}</b>
+                <span class="perf-count">{format!("{proc_count}p")}</span>
+                <code class="perf-avg" style="grid-column:3/-1">{text}</code>
+            </div>
+        }
+        .into_any()
+    }
+}
+
+#[component]
+fn PerfMeters(perf: RwSignal<Option<PerfSummary>>) -> impl IntoView {
+    view! {
+        <section id="perf" style="grid-column:1/-1">
+            <div class="row">
+                <h2>"AI resource use"</h2>
+                {move || {
+                    if perf.get().map(|p| !p.gpu_available).unwrap_or(false) {
+                        view! { <span class="sub">"GPU: n/a on this PC"</span> }.into_any()
+                    } else {
+                        view! {}.into_any()
+                    }
+                }}
+            </div>
+            {move || {
+                match perf.get() {
+                    None => view! { <div class="empty">"Waiting for data\u{2026}"</div> }.into_any(),
+                    Some(p) => {
+                        let live = p.is_live;
+                        let label = if live { "Live" } else { "Avg over this window" };
+                        let total_row = perf_row(
+                            "Total AI load", p.total.proc_count, p.total.cpu_pct as f64,
+                            p.total.mem_bytes as f64, p.total.gpu_pct.map(|g| g as f64), live, p.gpu_available, true,
+                        );
+                        let tool_rows: Vec<_> = p.tools.iter().map(|t| {
+                            perf_row(
+                                &nice_name(&t.tool), t.proc_count, t.cpu_pct as f64,
+                                t.mem_bytes as f64, t.gpu_pct.map(|g| g as f64), live, p.gpu_available, false,
+                            )
+                        }).collect();
+                        view! {
+                            <div class="perf-rows">
+                                <span class="sub perf-mode-label">{label}</span>
+                                {total_row}
+                                <div class="perf-divider"></div>
+                                {tool_rows}
+                            </div>
+                        }.into_any()
+                    }
+                }
+            }}
         </section>
     }
 }
