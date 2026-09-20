@@ -671,15 +671,15 @@ fn PerfMeters(perf: RwSignal<Option<PerfSummary>>) -> impl IntoView {
     view! {
         <section id="perf" style="grid-column:1/-1">
             <button
-                class="perf-toggle"
+                class="toggle-strip"
                 aria-expanded=move || expanded.get().to_string()
                 on:click=move |_| expanded.update(|e| *e = !*e)
             >
-                <span class="perf-toggle-title">
-                    <span class="perf-chevron">{move || if expanded.get() { "\u{25be}" } else { "\u{25b8}" }}</span>
+                <span class="toggle-strip-title">
+                    <span class="toggle-chevron">{move || if expanded.get() { "\u{25be}" } else { "\u{25b8}" }}</span>
                     "AI resource use"
                 </span>
-                <span class="sub perf-toggle-summary">
+                <span class="sub toggle-strip-summary">
                     {move || match perf.get() {
                         None => "Waiting for data\u{2026}".to_string(),
                         Some(p) => fmt_compact_total(&p),
@@ -687,11 +687,11 @@ fn PerfMeters(perf: RwSignal<Option<PerfSummary>>) -> impl IntoView {
                 </span>
             </button>
             <div
-                class="perf-overlay"
+                class="overlay"
                 style:display=move || if expanded.get() { "flex" } else { "none" }
                 on:click=move |_| expanded.set(false)
             >
-                <div class="perf-overlay-panel" on:click=|ev| ev.stop_propagation()>
+                <div class="overlay-panel" on:click=|ev| ev.stop_propagation()>
                     <div class="row">
                         <h2>"AI resource use"</h2>
                         {move || {
@@ -701,7 +701,7 @@ fn PerfMeters(perf: RwSignal<Option<PerfSummary>>) -> impl IntoView {
                                 view! {}.into_any()
                             }
                         }}
-                        <button class="perf-overlay-close" on:click=move |_| expanded.set(false) title="Close">"\u{2715}"</button>
+                        <button class="overlay-close" on:click=move |_| expanded.set(false) title="Close">"\u{2715}"</button>
                     </div>
                     {move || match perf.get() {
                         None => view! { <div class="empty">"Waiting for data\u{2026}"</div> }.into_any(),
