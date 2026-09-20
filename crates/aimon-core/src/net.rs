@@ -17,6 +17,16 @@ use std::time::{Duration, Instant};
 /// giving up after this deadline bounds the damage to one slow cycle instead.
 const DNS_BATCH_TIMEOUT: Duration = Duration::from_secs(2);
 
+/// How long to leave an IP alone after a failed/timed-out lookup before
+/// trying it again. Without this, a lookup that simply didn't finish within
+/// `DNS_BATCH_TIMEOUT` (e.g. it landed in a large batch and lost the race)
+/// would be indistinguishable from a genuine "no PTR record" IP and get
+/// permanently stuck showing the raw address for the rest of the collector's
+/// uptime. Retrying periodically fixes the transient case while still
+/// sparing truly unresolvable IPs (Cloudflare et al.) from being re-queried
+/// on every single new connection.
+const DNS_FAIL_RETRY_COOLDOWN: Duration = Duration::from_secs(15 * 60);
+
 #[derive(Debug, Clone)]
 pub struct NetConn {
     pub pid: u32,
@@ -27,22 +37,39 @@ pub struct NetConn {
 
 pub struct NetTracker {
     dns_cache: HashMap<IpAddr, String>,
+    dns_failed_at: HashMap<IpAddr, Instant>,
     seen: HashSet<(u32, IpAddr, u16)>,
 }
 
 impl NetTracker {
     pub fn new() -> Self {
-        Self { dns_cache: HashMap::new(), seen: HashSet::new() }
+        Self { dns_cache: HashMap::new(), dns_failed_at: HashMap::new(), seen: HashSet::new() }
     }
 
-    /// Resolves every not-yet-cached IP concurrently (one thread each),
-    /// waiting at most `DNS_BATCH_TIMEOUT` total. Anything still unresolved
-    /// when the deadline hits is cached as "" — matching Python's behavior
-    /// of caching an empty string on lookup failure — and its thread is left
-    /// to finish in the background and is simply ignored.
+    /// Resolves every not-yet-cached, not-in-cooldown IP concurrently (one
+    /// thread each), waiting at most `DNS_BATCH_TIMEOUT` total. Anything
+    /// still unresolved when the deadline hits is recorded as failed-just-now
+    /// (not cached as a permanent ""), so it's eligible for another attempt
+    /// after `DNS_FAIL_RETRY_COOLDOWN` instead of being stuck forever; its
+    /// thread is left to finish in the background and is simply ignored.
     fn resolve_batch(&mut self, ips: Vec<IpAddr>) {
-        let to_resolve: Vec<IpAddr> =
-            ips.into_iter().collect::<HashSet<_>>().into_iter().filter(|ip| !self.dns_cache.contains_key(ip)).collect();
+        let now = Instant::now();
+        let dns_cache = &self.dns_cache;
+        let dns_failed_at = &self.dns_failed_at;
+        let to_resolve: Vec<IpAddr> = ips
+            .into_iter()
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .filter(|ip| {
+                if dns_cache.contains_key(ip) {
+                    return false;
+                }
+                match dns_failed_at.get(ip) {
+                    Some(&last_fail) => now.duration_since(last_fail) >= DNS_FAIL_RETRY_COOLDOWN,
+                    None => true,
+                }
+            })
+            .collect();
         if to_resolve.is_empty() {
             return;
         }
@@ -74,8 +101,15 @@ impl NetTracker {
         }
 
         for ip in to_resolve {
-            let host = resolved.remove(&ip).unwrap_or_default();
-            self.dns_cache.insert(ip, host);
+            match resolved.remove(&ip).filter(|h| !h.is_empty()) {
+                Some(host) => {
+                    self.dns_cache.insert(ip, host);
+                    self.dns_failed_at.remove(&ip);
+                }
+                None => {
+                    self.dns_failed_at.insert(ip, now);
+                }
+            }
         }
     }
 
