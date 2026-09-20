@@ -95,3 +95,7 @@ To change it: write a single integer (seconds, clamped to 1-30) to `%LOCALAPPDAT
 ## Contributing
 
 Work on a branch and open a pull request against `master`. Never commit a real `aimon.db` or generated reports; they contain your activity history.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
