@@ -24,6 +24,7 @@ fn main() {
     let mut seen_children: HashSet<u32> = HashSet::new();
     let mut net = NetTracker::new();
     let mut seen_dev: HashMap<(String, String), (String, String)> = HashMap::new();
+    let mut snap = ProcSnapshot::new();
 
     // Baseline device usage so we only log new sessions from here on.
     for d in registry::read_device_usage() {
@@ -36,7 +37,7 @@ fn main() {
         let ts = db::now_str();
         conn.execute_batch("BEGIN;").ok();
 
-        let snap = ProcSnapshot::refresh();
+        snap.refresh();
         let current = snap.current_ai_processes(my_pid);
 
         for (pid, info) in &current {

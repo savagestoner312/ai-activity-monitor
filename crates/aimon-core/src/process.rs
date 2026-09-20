@@ -19,25 +19,52 @@ pub struct ProcSnapshot {
     /// parent pid -> direct child pids, precomputed once per refresh so
     /// descendant walks are O(subtree size) instead of O(n) per node.
     children_by_parent: HashMap<u32, Vec<u32>>,
+    num_cpus: usize,
 }
 
 impl ProcSnapshot {
-    pub fn refresh() -> Self {
-        let mut sys = System::new();
+    /// Creates a persistent snapshot. Must be reused across poll cycles (call
+    /// `refresh()` each cycle, not `new()`) — `Process::cpu_usage()` is a
+    /// delta since the last refresh *on the same `System` instance*, so
+    /// recreating a fresh `System` every cycle (the old `refresh() -> Self`
+    /// design) means CPU% would read as garbage forever, not just on the
+    /// first cycle.
+    pub fn new() -> Self {
+        let sys = System::new();
+        // std's count, not sysinfo's `cpus()` list — that requires its own
+        // refresh_cpu_list() call to be populated and we don't otherwise need
+        // per-core detail, just the logical core count to normalize cpu_usage().
+        let num_cpus = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
+        let mut snap = Self { sys, children_by_parent: HashMap::new(), num_cpus };
+        snap.refresh();
+        snap
+    }
+
+    pub fn refresh(&mut self) {
         // sysinfo's default refresh skips reading cmdline/exe for performance;
         // this tool's whole point is showing what AI tools run, so request it
         // explicitly. Without this, packaged/Electron apps (Claude, ChatGPT)
         // come back with an empty cmdline where psutil could read it.
         let refresh_kind = ProcessRefreshKind::everything();
-        sys.refresh_processes_specifics(sysinfo::ProcessesToUpdate::All, true, refresh_kind);
+        self.sys.refresh_processes_specifics(sysinfo::ProcessesToUpdate::All, true, refresh_kind);
 
-        let mut children_by_parent: HashMap<u32, Vec<u32>> = HashMap::new();
-        for (pid, proc) in sys.processes() {
+        self.children_by_parent.clear();
+        for (pid, proc) in self.sys.processes() {
             if let Some(parent) = proc.parent() {
-                children_by_parent.entry(parent.as_u32()).or_default().push(pid.as_u32());
+                self.children_by_parent.entry(parent.as_u32()).or_default().push(pid.as_u32());
             }
         }
-        Self { sys, children_by_parent }
+    }
+
+    /// Percent of *total system capacity* (0..~100, comparable to Task
+    /// Manager), not percent-of-one-core (sysinfo's raw `cpu_usage()` can
+    /// read >100% on a busy multi-core process, classic `top` semantics).
+    pub fn cpu_percent(&self, pid: u32) -> Option<f32> {
+        self.sys.process(Pid::from_u32(pid)).map(|p| p.cpu_usage() / self.num_cpus as f32)
+    }
+
+    pub fn mem_bytes(&self, pid: u32) -> Option<u64> {
+        self.sys.process(Pid::from_u32(pid)).map(|p| p.memory())
     }
 
     fn info_for(&self, pid: Pid, proc: &sysinfo::Process) -> ProcInfo {
