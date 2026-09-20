@@ -164,6 +164,212 @@ impl FeedFilter {
 const ALL_FILTERS: [FeedFilter; 6] =
     [FeedFilter::All, FeedFilter::Flagged, FeedFilter::Command, FeedFilter::Network, FeedFilter::Device, FeedFilter::Process];
 
+// ============ Settings: theme, layout, background ============
+// All persisted client-side via localStorage — nothing here touches the
+// backend, there's no server-side concept of "your theme."
+
+const SETTINGS_KEY: &str = "aimon.settings.v1";
+const BACKGROUND_KEY: &str = "aimon.settings.background.v1";
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
+enum PresetId {
+    Default,
+    GreenCrt,
+    Amber,
+    Synthwave,
+}
+
+impl PresetId {
+    const ALL: [PresetId; 4] = [PresetId::Default, PresetId::GreenCrt, PresetId::Amber, PresetId::Synthwave];
+
+    fn label(self) -> &'static str {
+        match self {
+            PresetId::Default => "Default",
+            PresetId::GreenCrt => "Green CRT",
+            PresetId::Amber => "Amber",
+            PresetId::Synthwave => "Synthwave",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+struct ThemeColors {
+    bg: String,
+    panel: String,
+    line: String,
+    fg: String,
+    muted: String,
+    cmd: String,
+    net: String,
+    proc: String,
+    dev: String,
+    flag: String,
+    vu_lo: String,
+    vu_mid: String,
+    vu_hi: String,
+}
+
+impl ThemeColors {
+    fn preset(id: PresetId) -> Self {
+        fn c(bg: &str, panel: &str, line: &str, fg: &str, muted: &str, cmd: &str, net: &str, proc: &str, dev: &str, flag: &str, vu_lo: &str, vu_mid: &str, vu_hi: &str) -> ThemeColors {
+            ThemeColors {
+                bg: bg.into(), panel: panel.into(), line: line.into(), fg: fg.into(), muted: muted.into(),
+                cmd: cmd.into(), net: net.into(), proc: proc.into(), dev: dev.into(), flag: flag.into(),
+                vu_lo: vu_lo.into(), vu_mid: vu_mid.into(), vu_hi: vu_hi.into(),
+            }
+        }
+        match id {
+            PresetId::Default => c("#16202e", "#1c2838", "#2a3a50", "#dfe7f1", "#8a9bb0", "#f2a541", "#5bc0eb", "#b9a7ff", "#7ee0b5", "#ff6b7d", "#3ddc73", "#f2c14e", "#ff5c5c"),
+            PresetId::GreenCrt => c("#0a1408", "#0f1f0c", "#1d3a17", "#8cff9b", "#4f8a58", "#c9ff5c", "#5cffb8", "#9dff70", "#c8ffb0", "#ff5c5c", "#39ff6a", "#c9ff3d", "#ff4f4f"),
+            PresetId::Amber => c("#1a1006", "#26180a", "#4a2f12", "#ffcf7a", "#b8863f", "#ffb347", "#ffdf91", "#ff9d4d", "#ffe8b0", "#ff5c5c", "#c9d64a", "#ffb347", "#ff5c3d"),
+            PresetId::Synthwave => c("#180a2e", "#22103f", "#3d1e63", "#f4e8ff", "#a082c4", "#ff9f1c", "#3ff5ff", "#ff5cd8", "#5cffb8", "#ff2d75", "#3ffce0", "#ff9f1c", "#ff2d75"),
+        }
+    }
+
+    /// (CSS custom property name, value) for every themable variable —
+    /// applying all of these to :root is the entire runtime reskin mechanism,
+    /// since every rule in index.html already references var(--...) with no
+    /// hardcoded literals outside the :root block itself.
+    fn entries(&self) -> [(&'static str, &str); 13] {
+        [
+            ("--bg", &self.bg), ("--panel", &self.panel), ("--line", &self.line),
+            ("--fg", &self.fg), ("--muted", &self.muted), ("--cmd", &self.cmd),
+            ("--net", &self.net), ("--proc", &self.proc), ("--dev", &self.dev),
+            ("--flag", &self.flag), ("--vu-lo", &self.vu_lo), ("--vu-mid", &self.vu_mid),
+            ("--vu-hi", &self.vu_hi),
+        ]
+    }
+}
+
+/// One entry per swatch in the "customize colors" grid — lets the UI iterate
+/// all 13 fields generically instead of writing 13 near-identical handlers.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ColorField {
+    Bg, Panel, Line, Fg, Muted, Cmd, Net, Proc, Dev, Flag, VuLo, VuMid, VuHi,
+}
+
+impl ColorField {
+    const ALL: [(ColorField, &'static str); 13] = [
+        (ColorField::Bg, "Background"), (ColorField::Panel, "Panel"), (ColorField::Line, "Border"),
+        (ColorField::Fg, "Text"), (ColorField::Muted, "Muted text"), (ColorField::Cmd, "Command"),
+        (ColorField::Net, "Network"), (ColorField::Proc, "Process"), (ColorField::Dev, "Device"),
+        (ColorField::Flag, "Flagged"), (ColorField::VuLo, "VU low"), (ColorField::VuMid, "VU mid"),
+        (ColorField::VuHi, "VU high"),
+    ];
+
+    fn get(self, t: &ThemeColors) -> String {
+        match self {
+            ColorField::Bg => t.bg.clone(), ColorField::Panel => t.panel.clone(), ColorField::Line => t.line.clone(),
+            ColorField::Fg => t.fg.clone(), ColorField::Muted => t.muted.clone(), ColorField::Cmd => t.cmd.clone(),
+            ColorField::Net => t.net.clone(), ColorField::Proc => t.proc.clone(), ColorField::Dev => t.dev.clone(),
+            ColorField::Flag => t.flag.clone(), ColorField::VuLo => t.vu_lo.clone(), ColorField::VuMid => t.vu_mid.clone(),
+            ColorField::VuHi => t.vu_hi.clone(),
+        }
+    }
+
+    fn set(self, t: &mut ThemeColors, v: String) {
+        match self {
+            ColorField::Bg => t.bg = v, ColorField::Panel => t.panel = v, ColorField::Line => t.line = v,
+            ColorField::Fg => t.fg = v, ColorField::Muted => t.muted = v, ColorField::Cmd => t.cmd = v,
+            ColorField::Net => t.net = v, ColorField::Proc => t.proc = v, ColorField::Dev => t.dev = v,
+            ColorField::Flag => t.flag = v, ColorField::VuLo => t.vu_lo = v, ColorField::VuMid => t.vu_mid = v,
+            ColorField::VuHi => t.vu_hi = v,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
+struct SectionVisibility {
+    perf: bool,
+    river: bool,
+    feed: bool,
+    window_counts: bool,
+    endpoints: bool,
+    // TimeControls is intentionally not included — it's the primary time-
+    // navigation control, not a content section; hiding it would strand
+    // the user with no way to change the viewed window.
+}
+
+impl Default for SectionVisibility {
+    fn default() -> Self {
+        Self { perf: true, river: true, feed: true, window_counts: true, endpoints: true }
+    }
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct BackgroundImage {
+    data_url: String,
+    /// 0.0 = image fully visible, 1.0 = fully hidden behind the dim layer.
+    dim: f32,
+}
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct SettingsBlob {
+    theme: ThemeColors,
+    theme_preset: PresetId,
+    sections: SectionVisibility,
+}
+
+fn local_storage() -> Option<web_sys::Storage> {
+    web_sys::window()?.local_storage().ok()?
+}
+
+fn load_settings_blob() -> Option<SettingsBlob> {
+    let raw = local_storage()?.get_item(SETTINGS_KEY).ok()??;
+    serde_json::from_str(&raw).ok()
+}
+
+fn save_settings_blob(blob: &SettingsBlob) {
+    let Some(storage) = local_storage() else { return };
+    if let Ok(json) = serde_json::to_string(blob) {
+        let _ = storage.set_item(SETTINGS_KEY, &json);
+    }
+}
+
+fn load_background() -> Option<BackgroundImage> {
+    let raw = local_storage()?.get_item(BACKGROUND_KEY).ok()??;
+    serde_json::from_str(&raw).ok()
+}
+
+fn save_background(bg: Option<&BackgroundImage>) {
+    let Some(storage) = local_storage() else { return };
+    match bg {
+        Some(b) => {
+            if let Ok(json) = serde_json::to_string(b) {
+                let _ = storage.set_item(BACKGROUND_KEY, &json);
+            }
+        }
+        None => {
+            let _ = storage.remove_item(BACKGROUND_KEY);
+        }
+    }
+}
+
+/// The entire runtime reskin mechanism: overwrite the 13 CSS custom
+/// properties on the document root. Inline element styles win the cascade
+/// over stylesheet rules (including the @media prefers-color-scheme block),
+/// so this correctly overrides OS light/dark preference with an explicit
+/// user theme choice — that's intentional, not an oversight.
+fn apply_theme(theme: &ThemeColors) {
+    use wasm_bindgen::JsCast;
+    let Some(document) = web_sys::window().and_then(|w| w.document()) else { return };
+    let Some(el) = document.document_element() else { return };
+    let Ok(html_el) = el.dyn_into::<web_sys::HtmlElement>() else { return };
+    let style = html_el.style();
+    for (name, value) in theme.entries() {
+        let _ = style.set_property(name, value);
+    }
+}
+
+#[derive(Clone, Copy)]
+struct SettingsState {
+    theme: RwSignal<ThemeColors>,
+    theme_preset: RwSignal<PresetId>,
+    sections: RwSignal<SectionVisibility>,
+    background: RwSignal<Option<BackgroundImage>>,
+    panel_open: RwSignal<bool>,
+}
+
 #[derive(Clone, Copy)]
 struct SharedState {
     events: RwSignal<Vec<UnifiedEvent>>,
@@ -184,6 +390,29 @@ fn App() -> impl IntoView {
     };
     let filter = RwSignal::new(FeedFilter::All);
     let clock = RwSignal::new(String::new());
+
+    let loaded_settings = load_settings_blob();
+    let settings = SettingsState {
+        theme: RwSignal::new(loaded_settings.as_ref().map(|b| b.theme.clone()).unwrap_or_else(|| ThemeColors::preset(PresetId::Default))),
+        theme_preset: RwSignal::new(loaded_settings.as_ref().map(|b| b.theme_preset).unwrap_or(PresetId::Default)),
+        sections: RwSignal::new(loaded_settings.as_ref().map(|b| b.sections).unwrap_or_default()),
+        background: RwSignal::new(load_background()),
+        panel_open: RwSignal::new(false),
+    };
+
+    // Apply immediately on startup and whenever the theme changes.
+    Effect::new(move |_| apply_theme(&settings.theme.get()));
+
+    // Persist theme+preset+layout as one small blob whenever any of them change.
+    Effect::new(move |_| {
+        let blob =
+            SettingsBlob { theme: settings.theme.get(), theme_preset: settings.theme_preset.get(), sections: settings.sections.get() };
+        save_settings_blob(&blob);
+    });
+
+    // Background lives in its own key so a large-image write/quota error can
+    // never corrupt or block the much smaller, more important settings blob.
+    Effect::new(move |_| save_background(settings.background.get().as_ref()));
 
     let window_size = RwSignal::new(WindowSize::H1);
     let slider_pos = RwSignal::new(1.0_f64);
@@ -351,7 +580,7 @@ fn App() -> impl IntoView {
     });
 
     view! {
-        <Header shared=shared clock=clock/>
+        <Header shared=shared clock=clock settings=settings/>
         <main>
             <TimeControls
                 window_size=window_size
@@ -377,7 +606,7 @@ fn App() -> impl IntoView {
 }
 
 #[component]
-fn Header(shared: SharedState, clock: RwSignal<String>) -> impl IntoView {
+fn Header(shared: SharedState, clock: RwSignal<String>, settings: SettingsState) -> impl IntoView {
     view! {
         <header>
             <span class="pulse" class:off=move || !shared.connected.get()></span>
@@ -410,7 +639,64 @@ fn Header(shared: SharedState, clock: RwSignal<String>) -> impl IntoView {
                     }
                 }}
             </div>
+            <SettingsPanel settings=settings/>
         </header>
+    }
+}
+
+#[component]
+fn SettingsPanel(settings: SettingsState) -> impl IntoView {
+    view! {
+        <button class="gear-btn" on:click=move |_| settings.panel_open.update(|o| *o = !*o) title="Settings">"\u{2699}"</button>
+        <div
+            class="overlay"
+            style:display=move || if settings.panel_open.get() { "flex" } else { "none" }
+            on:click=move |_| settings.panel_open.set(false)
+        >
+            <div class="overlay-panel" on:click=|ev| ev.stop_propagation()>
+                <div class="row">
+                    <h2>"Settings"</h2>
+                    <button class="overlay-close" on:click=move |_| settings.panel_open.set(false) title="Close">"\u{2715}"</button>
+                </div>
+
+                <h3 class="settings-h3">"Theme"</h3>
+                <div class="preset-buttons">
+                    {PresetId::ALL.iter().map(|&id| {
+                        view! {
+                            <button
+                                class="preset-btn"
+                                class:active=move || settings.theme_preset.get() == id
+                                on:click=move |_| {
+                                    settings.theme_preset.set(id);
+                                    settings.theme.set(ThemeColors::preset(id));
+                                }
+                            >{id.label()}</button>
+                        }
+                    }).collect_view()}
+                </div>
+                <div class="swatch-grid">
+                    {ColorField::ALL.iter().map(|&(field, label)| {
+                        view! {
+                            <label class="swatch-row">
+                                <span>{label}</span>
+                                <input
+                                    type="color"
+                                    prop:value=move || field.get(&settings.theme.get())
+                                    on:input=move |ev| {
+                                        let v = event_target_value(&ev);
+                                        settings.theme.update(|t| field.set(t, v));
+                                    }
+                                />
+                            </label>
+                        }
+                    }).collect_view()}
+                </div>
+                <button
+                    class="reset-btn"
+                    on:click=move |_| settings.theme.set(ThemeColors::preset(settings.theme_preset.get_untracked()))
+                >"Reset to preset"</button>
+            </div>
+        </div>
     }
 }
 
