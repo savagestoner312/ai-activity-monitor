@@ -4,6 +4,8 @@ pub mod queries;
 pub mod rules;
 
 #[cfg(windows)]
+pub mod gpu;
+#[cfg(windows)]
 pub mod net;
 #[cfg(windows)]
 pub mod process;

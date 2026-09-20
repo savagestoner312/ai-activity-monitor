@@ -14,3 +14,4 @@ winreg = "0.52"
 sysinfo = "0.32"
 netstat2 = "0.11"
 dns-lookup = "2"
+windows = { version = "0.57", features = ["Win32_System_Performance", "Win32_Foundation"] }

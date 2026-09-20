@@ -48,6 +48,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "sysinfo",
+ "windows",
  "winreg",
 ]
 
