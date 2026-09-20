@@ -296,6 +296,47 @@ impl Default for SectionVisibility {
     }
 }
 
+/// Same generic get/set-by-field trick as `ColorField`, for the Layout
+/// checkboxes.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SectionField {
+    Perf,
+    River,
+    Feed,
+    WindowCounts,
+    Endpoints,
+}
+
+impl SectionField {
+    const ALL: [(SectionField, &'static str); 5] = [
+        (SectionField::Perf, "AI resource use"),
+        (SectionField::River, "Activity timeline"),
+        (SectionField::Feed, "Live feed"),
+        (SectionField::WindowCounts, "Window counts"),
+        (SectionField::Endpoints, "Endpoints"),
+    ];
+
+    fn get(self, s: &SectionVisibility) -> bool {
+        match self {
+            SectionField::Perf => s.perf,
+            SectionField::River => s.river,
+            SectionField::Feed => s.feed,
+            SectionField::WindowCounts => s.window_counts,
+            SectionField::Endpoints => s.endpoints,
+        }
+    }
+
+    fn set(self, s: &mut SectionVisibility, v: bool) {
+        match self {
+            SectionField::Perf => s.perf = v,
+            SectionField::River => s.river = v,
+            SectionField::Feed => s.feed = v,
+            SectionField::WindowCounts => s.window_counts = v,
+            SectionField::Endpoints => s.endpoints = v,
+        }
+    }
+}
+
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 struct BackgroundImage {
     data_url: String,
@@ -589,17 +630,18 @@ fn App() -> impl IntoView {
                 is_live=is_live
                 window_label=window_label
             />
-            <PerfMeters perf=shared.perf/>
+            <PerfMeters perf=shared.perf sections=settings.sections/>
             <RiverLanesView
                 events=shared.events
                 window_size=window_size
                 is_live=is_live
                 view_end_ms=view_end_ms
+                sections=settings.sections
             />
-            <LiveFeed events=shared.events filter=filter/>
+            <LiveFeed events=shared.events filter=filter sections=settings.sections/>
             <aside>
-                <WindowCounts state=shared.state window_label=window_label/>
-                <EndpointsChart state=shared.state/>
+                <WindowCounts state=shared.state window_label=window_label sections=settings.sections/>
+                <EndpointsChart state=shared.state sections=settings.sections/>
             </aside>
         </main>
     }
@@ -695,6 +737,27 @@ fn SettingsPanel(settings: SettingsState) -> impl IntoView {
                     class="reset-btn"
                     on:click=move |_| settings.theme.set(ThemeColors::preset(settings.theme_preset.get_untracked()))
                 >"Reset to preset"</button>
+
+                <div class="settings-divider"></div>
+
+                <h3 class="settings-h3">"Layout"</h3>
+                <div class="layout-checks">
+                    {SectionField::ALL.iter().map(|&(field, label)| {
+                        view! {
+                            <label class="layout-check">
+                                <input
+                                    type="checkbox"
+                                    prop:checked=move || field.get(&settings.sections.get())
+                                    on:change=move |ev| {
+                                        let checked = event_target_checked(&ev);
+                                        settings.sections.update(|s| field.set(s, checked));
+                                    }
+                                />
+                                <span>{label}</span>
+                            </label>
+                        }
+                    }).collect_view()}
+                </div>
             </div>
         </div>
     }
@@ -759,9 +822,10 @@ fn RiverLanesView(
     window_size: RwSignal<WindowSize>,
     is_live: Memo<bool>,
     view_end_ms: Memo<f64>,
+    sections: RwSignal<SectionVisibility>,
 ) -> impl IntoView {
     view! {
-        <section id="river">
+        <section id="river" style:display=move || if sections.get().river { "" } else { "none" }>
             <div class="row">
                 <h2>{move || format!("Last {}", window_size.get().label())} <span class="sub">"one row per AI tool"</span></h2>
                 <div class="legend">
@@ -952,10 +1016,10 @@ fn perf_detail_rows(p: &PerfSummary) -> impl IntoView {
 /// page), expanding into a large overlay on click — the full per-tool VU
 /// meter grid needs more room than a permanently-inline panel should claim.
 #[component]
-fn PerfMeters(perf: RwSignal<Option<PerfSummary>>) -> impl IntoView {
+fn PerfMeters(perf: RwSignal<Option<PerfSummary>>, sections: RwSignal<SectionVisibility>) -> impl IntoView {
     let expanded = RwSignal::new(false);
     view! {
-        <section id="perf" style="grid-column:1/-1">
+        <section id="perf" style="grid-column:1/-1" style:display=move || if sections.get().perf { "" } else { "none" }>
             <button
                 class="toggle-strip"
                 aria-expanded=move || expanded.get().to_string()
@@ -1000,9 +1064,9 @@ fn PerfMeters(perf: RwSignal<Option<PerfSummary>>) -> impl IntoView {
 }
 
 #[component]
-fn LiveFeed(events: RwSignal<Vec<UnifiedEvent>>, filter: RwSignal<FeedFilter>) -> impl IntoView {
+fn LiveFeed(events: RwSignal<Vec<UnifiedEvent>>, filter: RwSignal<FeedFilter>, sections: RwSignal<SectionVisibility>) -> impl IntoView {
     view! {
-        <section>
+        <section id="feed-section" style:display=move || if sections.get().feed { "" } else { "none" }>
             <h2>"Live feed"</h2>
             <div id="filters" role="group" aria-label="Filter feed">
                 {ALL_FILTERS.iter().map(|&f| {
@@ -1046,9 +1110,9 @@ fn LiveFeed(events: RwSignal<Vec<UnifiedEvent>>, filter: RwSignal<FeedFilter>) -
 }
 
 #[component]
-fn WindowCounts(state: RwSignal<Option<StateSummary>>, window_label: Memo<String>) -> impl IntoView {
+fn WindowCounts(state: RwSignal<Option<StateSummary>>, window_label: Memo<String>, sections: RwSignal<SectionVisibility>) -> impl IntoView {
     view! {
-        <section>
+        <section id="window-counts" style:display=move || if sections.get().window_counts { "" } else { "none" }>
             <h2>{move || window_label.get()}</h2>
             <dl>
                 {move || {
@@ -1066,9 +1130,9 @@ fn WindowCounts(state: RwSignal<Option<StateSummary>>, window_label: Memo<String
 }
 
 #[component]
-fn EndpointsChart(state: RwSignal<Option<StateSummary>>) -> impl IntoView {
+fn EndpointsChart(state: RwSignal<Option<StateSummary>>, sections: RwSignal<SectionVisibility>) -> impl IntoView {
     view! {
-        <section>
+        <section id="endpoints" style:display=move || if sections.get().endpoints { "" } else { "none" }>
             <h2>"Who they're talking to"</h2>
             <div>
                 {move || {
