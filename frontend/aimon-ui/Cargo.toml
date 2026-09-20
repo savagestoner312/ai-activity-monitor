@@ -14,6 +14,7 @@ gloo-timers = { version = "0.3", features = ["futures"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
 gloo-file = { version = "0.3", features = ["futures"] }
 web-sys = { version = "0.3", features = [

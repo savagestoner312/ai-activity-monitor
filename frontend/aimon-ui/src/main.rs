@@ -402,6 +402,64 @@ fn apply_theme(theme: &ThemeColors) {
     }
 }
 
+const MAX_UPLOAD_BYTES: f64 = 20.0 * 1024.0 * 1024.0;
+const MAX_BG_EDGE: f64 = 1920.0;
+const BG_JPEG_QUALITY: f64 = 0.72;
+
+/// Reads the user's chosen file, decodes it, downscales it to at most
+/// `MAX_BG_EDGE` on its long edge, and re-encodes as JPEG. Keeps the stored
+/// data URL to roughly tens-to-a-few-hundred KB regardless of how large the
+/// original photo was, instead of stuffing a multi-MB original into
+/// localStorage.
+async fn process_background_upload(file: web_sys::File) -> Result<String, String> {
+    use wasm_bindgen::JsCast;
+
+    if file.size() > MAX_UPLOAD_BYTES {
+        return Err("Image is too large (max 20MB) \u{2014} try a smaller photo".to_string());
+    }
+
+    let gloo_file = gloo_file::File::from(file);
+    let raw_data_url = gloo_file::futures::read_as_data_url(&gloo_file)
+        .await
+        .map_err(|e| format!("Couldn't read the file: {e}"))?;
+
+    let img = web_sys::HtmlImageElement::new().map_err(|_| "Couldn't create an image element".to_string())?;
+    img.set_src(&raw_data_url);
+    wasm_bindgen_futures::JsFuture::from(img.decode())
+        .await
+        .map_err(|_| "Couldn't decode the image \u{2014} is it a valid image file?".to_string())?;
+
+    let (w, h) = (img.natural_width() as f64, img.natural_height() as f64);
+    if w <= 0.0 || h <= 0.0 {
+        return Err("Image has no visible size".to_string());
+    }
+    let scale = (MAX_BG_EDGE / w.max(h)).min(1.0);
+    let (out_w, out_h) = ((w * scale).round().max(1.0) as u32, (h * scale).round().max(1.0) as u32);
+
+    let document = web_sys::window().and_then(|w| w.document()).ok_or_else(|| "No document available".to_string())?;
+    let canvas = document
+        .create_element("canvas")
+        .map_err(|_| "Couldn't create a canvas".to_string())?
+        .dyn_into::<web_sys::HtmlCanvasElement>()
+        .map_err(|_| "Couldn't create a canvas".to_string())?;
+    canvas.set_width(out_w);
+    canvas.set_height(out_h);
+
+    let ctx = canvas
+        .get_context("2d")
+        .map_err(|_| "Couldn't get a drawing context".to_string())?
+        .ok_or_else(|| "Couldn't get a drawing context".to_string())?
+        .dyn_into::<web_sys::CanvasRenderingContext2d>()
+        .map_err(|_| "Couldn't get a drawing context".to_string())?;
+
+    ctx.draw_image_with_html_image_element_and_dw_and_dh(&img, 0.0, 0.0, out_w as f64, out_h as f64)
+        .map_err(|_| "Couldn't draw the image".to_string())?;
+
+    canvas
+        .to_data_url_with_type_and_encoder_options("image/jpeg", &wasm_bindgen::JsValue::from_f64(BG_JPEG_QUALITY))
+        .map_err(|_| "Couldn't encode the image".to_string())
+}
+
 #[derive(Clone, Copy)]
 struct SettingsState {
     theme: RwSignal<ThemeColors>,
@@ -621,6 +679,12 @@ fn App() -> impl IntoView {
     });
 
     view! {
+        <div id="bg-layer" style:background-image=move || {
+            settings.background.get().map(|b| format!("url({})", b.data_url)).unwrap_or_default()
+        }></div>
+        <div id="bg-dim" style:opacity=move || {
+            settings.background.get().map(|b| b.dim as f64).unwrap_or(1.0).to_string()
+        }></div>
         <Header shared=shared clock=clock settings=settings/>
         <main>
             <TimeControls
@@ -688,6 +752,29 @@ fn Header(shared: SharedState, clock: RwSignal<String>, settings: SettingsState)
 
 #[component]
 fn SettingsPanel(settings: SettingsState) -> impl IntoView {
+    let bg_error = RwSignal::new(None::<String>);
+    let bg_uploading = RwSignal::new(false);
+    let has_background = Memo::new(move |_| settings.background.get().is_some());
+
+    let on_bg_file_change = move |ev: leptos::ev::Event| {
+        let input: web_sys::HtmlInputElement = event_target(&ev);
+        let Some(files) = input.files() else { return };
+        let Some(file) = files.get(0) else { return };
+        input.set_value("");
+        bg_error.set(None);
+        bg_uploading.set(true);
+        spawn_local(async move {
+            match process_background_upload(file).await {
+                Ok(data_url) => {
+                    let dim = settings.background.get_untracked().map(|b| b.dim).unwrap_or(0.7);
+                    settings.background.set(Some(BackgroundImage { data_url, dim }));
+                }
+                Err(e) => bg_error.set(Some(e)),
+            }
+            bg_uploading.set(false);
+        });
+    };
+
     view! {
         <button class="gear-btn" on:click=move |_| settings.panel_open.update(|o| *o = !*o) title="Settings">"\u{2699}"</button>
         <div
@@ -758,6 +845,52 @@ fn SettingsPanel(settings: SettingsState) -> impl IntoView {
                         }
                     }).collect_view()}
                 </div>
+
+                <div class="settings-divider"></div>
+
+                <h3 class="settings-h3">"Background"</h3>
+                <div class="bg-row">
+                    <input type="file" accept="image/*" on:change=on_bg_file_change disabled=move || bg_uploading.get() />
+                    {move || bg_uploading.get().then(|| view! { <span class="perf-count">"Processing\u{2026}"</span> })}
+                    <Show when=move || has_background.get()>
+                        {move || settings.background.get().map(|b| view! {
+                            <img class="bg-thumb" src=b.data_url alt="Background preview" />
+                        })}
+                        <button class="reset-btn" on:click=move |_| settings.background.set(None)>"Remove background"</button>
+                    </Show>
+                </div>
+                {move || bg_error.get().map(|e| view! { <div class="bg-error">{e}</div> })}
+                <Show when=move || has_background.get()>
+                    <label class="bg-dim-row">
+                        <span>"Dim"</span>
+                        <input
+                            type="range" min="0" max="100" step="1"
+                            prop:value=move || {
+                                (settings.background.get().map(|b| b.dim).unwrap_or(0.7) * 100.0).round().to_string()
+                            }
+                            on:input=move |ev| {
+                                let v: f32 = event_target_value(&ev).parse().unwrap_or(70.0);
+                                settings.background.update(|b| {
+                                    if let Some(b) = b {
+                                        b.dim = (v / 100.0).clamp(0.0, 1.0);
+                                    }
+                                });
+                            }
+                        />
+                    </label>
+                </Show>
+
+                <div class="settings-divider"></div>
+
+                <button
+                    class="reset-btn"
+                    on:click=move |_| {
+                        settings.theme_preset.set(PresetId::Default);
+                        settings.theme.set(ThemeColors::preset(PresetId::Default));
+                        settings.sections.set(SectionVisibility::default());
+                        settings.background.set(None);
+                    }
+                >"Reset all settings"</button>
             </div>
         </div>
     }
