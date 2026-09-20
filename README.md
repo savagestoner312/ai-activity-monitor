@@ -54,7 +54,7 @@ To uninstall:
 
 | Path | Purpose |
 |---|---|
-| `crates/aimon-collector` | Polls every 3 seconds and writes events to SQLite |
+| `crates/aimon-collector` | Polls (every 3 seconds by default) and writes events to SQLite |
 | `crates/aimon-dashboard` | Local web server, JSON API (`/api/state`, `/api/events`, `/api/meta`, `/api/river`), and the embedded frontend |
 | `crates/aimon-report` | Static daily HTML report |
 | `crates/aimon-core` | Shared schema, DB access, process/network/registry monitoring, AI-tool matching rules |
@@ -67,8 +67,14 @@ To add AI tools to watch, edit `AI_NAME_MATCH` / `AI_CMDLINE_MATCH` in `crates/a
 ## Known limits
 
 - Browser-based AI (ChatGPT or Claude in a browser tab) shows up as the browser, not the AI service.
-- Commands that finish in under ~3 seconds can be missed between polls.
+- Commands that finish faster than the poll interval can be missed between polls (see below to tune it).
 - Mic/camera detection reads Windows registry data and has only been validated on Windows 11.
+
+### Tuning the poll interval
+
+The collector re-scans the process table every `poll_seconds.txt` seconds (default 3 if the file is missing). Lower it to catch shorter-lived commands at the cost of more CPU (a full process-table walk with cmdline reads every cycle); raise it to use less CPU at the cost of missing more short commands. This doesn't fully close the gap — anything faster than the interval you choose is still invisible to a snapshot diff — see the ETW/Sysmon roadmap item below for the event-driven fix.
+
+To change it: write a single integer (seconds, clamped to 1-30) to `%LOCALAPPDATA%\AIMonitor\poll_seconds.txt` and restart the `AIMonitor-Collector` scheduled task (`schtasks /end /tn AIMonitor-Collector` then `schtasks /run /tn AIMonitor-Collector`, or just log off/on). No rebuild needed.
 
 ## Roadmap
 

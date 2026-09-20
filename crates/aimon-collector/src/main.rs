@@ -11,15 +11,24 @@ use aimon_core::{db, gpu::GpuSampler, net::NetTracker, paths, process::ProcSnaps
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
-const POLL_SECONDS: u64 = 3;
 const CACHE_CLEAR_THRESHOLD: usize = 50_000;
-const PERF_PRUNE_EVERY_N_CYCLES: u64 = 1200; // ~hourly at 3s cadence
 const PERF_RETENTION_HOURS: i64 = 48;
 
 fn main() {
     let db_dir = paths::app_dir();
     std::fs::create_dir_all(&db_dir).expect("create AIMonitor dir");
     let conn = db::open_rw(&paths::db_path()).expect("open aimon.db for writing");
+
+    // How often to re-scan the process table. Lower catches shorter-lived
+    // commands (anything that starts and exits between two polls is
+    // invisible to a snapshot diff) at the cost of more CPU; see
+    // `paths::poll_seconds` doc comment. Edit poll_seconds.txt in the app
+    // dir and restart the collector to change it.
+    let poll_seconds = paths::poll_seconds();
+    // Keep the "prune perf samples roughly hourly" cadence correct
+    // regardless of poll_seconds, instead of the old fixed 1200-cycle count
+    // that silently assumed a 3s interval.
+    let perf_prune_every_n_cycles = (3600 / poll_seconds).max(1);
 
     let my_pid = std::process::id();
     let mut ai_pids: HashMap<u32, aimon_core::process::ProcInfo> = HashMap::new();
@@ -35,7 +44,7 @@ fn main() {
         seen_dev.insert((d.device, d.app), (d.started, d.stopped));
     }
 
-    println!("AI Activity Monitor collector started. DB: {:?}", paths::db_path());
+    println!("AI Activity Monitor collector started. DB: {:?}, poll interval: {poll_seconds}s", paths::db_path());
 
     loop {
         let ts = db::now_str();
@@ -117,13 +126,13 @@ fn main() {
         }
 
         cycle += 1;
-        if cycle % PERF_PRUNE_EVERY_N_CYCLES == 0 {
+        if cycle % perf_prune_every_n_cycles == 0 {
             let cutoff = (chrono::Local::now() - chrono::Duration::hours(PERF_RETENTION_HOURS))
                 .format("%Y-%m-%dT%H:%M:%S")
                 .to_string();
             let _ = db::prune_perf_samples(&conn, &cutoff);
         }
 
-        std::thread::sleep(Duration::from_secs(POLL_SECONDS));
+        std::thread::sleep(Duration::from_secs(poll_seconds));
     }
 }
