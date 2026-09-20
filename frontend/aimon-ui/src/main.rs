@@ -630,47 +630,85 @@ fn perf_row(name: &str, proc_count: u32, cpu_pct: f64, mem_bytes: f64, gpu_pct: 
     }
 }
 
+fn fmt_compact_total(p: &PerfSummary) -> String {
+    let gpu = if !p.gpu_available {
+        String::new()
+    } else {
+        match p.total.gpu_pct {
+            Some(g) => format!(" \u{b7} GPU {g:.1}%"),
+            None => String::new(),
+        }
+    };
+    format!("{}p \u{b7} CPU {:.1}% \u{b7} MEM {}{}", p.total.proc_count, p.total.cpu_pct, fmt_mem(p.total.mem_bytes as f64), gpu)
+}
+
+fn perf_detail_rows(p: &PerfSummary) -> impl IntoView {
+    let live = p.is_live;
+    let label = if live { "Live" } else { "Avg over this window" };
+    let total_row =
+        perf_row("Total AI load", p.total.proc_count, p.total.cpu_pct as f64, p.total.mem_bytes as f64, p.total.gpu_pct.map(|g| g as f64), live, p.gpu_available, true);
+    let tool_rows: Vec<_> = p
+        .tools
+        .iter()
+        .map(|t| perf_row(&nice_name(&t.tool), t.proc_count, t.cpu_pct as f64, t.mem_bytes as f64, t.gpu_pct.map(|g| g as f64), live, p.gpu_available, false))
+        .collect();
+    view! {
+        <div class="perf-rows">
+            <span class="sub perf-mode-label">{label}</span>
+            {total_row}
+            <div class="perf-divider"></div>
+            {tool_rows}
+        </div>
+    }
+}
+
+/// Collapsed by default (a compact one-line strip so it doesn't dominate the
+/// page), expanding into a large overlay on click — the full per-tool VU
+/// meter grid needs more room than a permanently-inline panel should claim.
 #[component]
 fn PerfMeters(perf: RwSignal<Option<PerfSummary>>) -> impl IntoView {
+    let expanded = RwSignal::new(false);
     view! {
         <section id="perf" style="grid-column:1/-1">
-            <div class="row">
-                <h2>"AI resource use"</h2>
-                {move || {
-                    if perf.get().map(|p| !p.gpu_available).unwrap_or(false) {
-                        view! { <span class="sub">"GPU: n/a on this PC"</span> }.into_any()
-                    } else {
-                        view! {}.into_any()
-                    }
-                }}
+            <button
+                class="perf-toggle"
+                aria-expanded=move || expanded.get().to_string()
+                on:click=move |_| expanded.update(|e| *e = !*e)
+            >
+                <span class="perf-toggle-title">
+                    <span class="perf-chevron">{move || if expanded.get() { "\u{25be}" } else { "\u{25b8}" }}</span>
+                    "AI resource use"
+                </span>
+                <span class="sub perf-toggle-summary">
+                    {move || match perf.get() {
+                        None => "Waiting for data\u{2026}".to_string(),
+                        Some(p) => fmt_compact_total(&p),
+                    }}
+                </span>
+            </button>
+            <div
+                class="perf-overlay"
+                style:display=move || if expanded.get() { "flex" } else { "none" }
+                on:click=move |_| expanded.set(false)
+            >
+                <div class="perf-overlay-panel" on:click=|ev| ev.stop_propagation()>
+                    <div class="row">
+                        <h2>"AI resource use"</h2>
+                        {move || {
+                            if perf.get().map(|p| !p.gpu_available).unwrap_or(false) {
+                                view! { <span class="sub">"GPU: n/a on this PC"</span> }.into_any()
+                            } else {
+                                view! {}.into_any()
+                            }
+                        }}
+                        <button class="perf-overlay-close" on:click=move |_| expanded.set(false) title="Close">"\u{2715}"</button>
+                    </div>
+                    {move || match perf.get() {
+                        None => view! { <div class="empty">"Waiting for data\u{2026}"</div> }.into_any(),
+                        Some(p) => perf_detail_rows(&p).into_any(),
+                    }}
+                </div>
             </div>
-            {move || {
-                match perf.get() {
-                    None => view! { <div class="empty">"Waiting for data\u{2026}"</div> }.into_any(),
-                    Some(p) => {
-                        let live = p.is_live;
-                        let label = if live { "Live" } else { "Avg over this window" };
-                        let total_row = perf_row(
-                            "Total AI load", p.total.proc_count, p.total.cpu_pct as f64,
-                            p.total.mem_bytes as f64, p.total.gpu_pct.map(|g| g as f64), live, p.gpu_available, true,
-                        );
-                        let tool_rows: Vec<_> = p.tools.iter().map(|t| {
-                            perf_row(
-                                &nice_name(&t.tool), t.proc_count, t.cpu_pct as f64,
-                                t.mem_bytes as f64, t.gpu_pct.map(|g| g as f64), live, p.gpu_available, false,
-                            )
-                        }).collect();
-                        view! {
-                            <div class="perf-rows">
-                                <span class="sub perf-mode-label">{label}</span>
-                                {total_row}
-                                <div class="perf-divider"></div>
-                                {tool_rows}
-                            </div>
-                        }.into_any()
-                    }
-                }
-            }}
         </section>
     }
 }

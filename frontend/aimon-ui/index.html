@@ -62,6 +62,19 @@ aside{display:grid;gap:1.25rem;align-content:start}
 #time-controls button{font:inherit;font-size:.82rem;background:none;color:var(--muted);border:1px solid var(--line);border-radius:6px;padding:.25rem .7rem;cursor:pointer}
 #time-controls button.hot{color:var(--flag);border-color:var(--flag)}
 #time-controls input[type=range]{accent-color:var(--net)}
+#perf{padding:0}
+.perf-toggle{width:100%;display:flex;align-items:center;justify-content:space-between;gap:1rem;
+font:inherit;background:none;border:0;color:var(--fg);padding:1rem 1.1rem;cursor:pointer;text-align:left;border-radius:12px}
+.perf-toggle:hover{background:color-mix(in srgb,var(--line) 40%,transparent)}
+.perf-toggle-title{display:flex;align-items:center;gap:.5rem;font-size:.95rem;font-weight:600}
+.perf-chevron{color:var(--muted);font-size:.75rem;width:.7rem;display:inline-block}
+.perf-toggle-summary{font:12.5px var(--code);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.perf-overlay{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:50;display:none;align-items:center;justify-content:center;padding:2rem}
+.perf-overlay-panel{position:relative;background:var(--panel);border:1px solid var(--line);border-radius:12px;
+width:min(1100px,90vw);max-height:85vh;overflow:auto;padding:1.25rem 1.5rem}
+.perf-overlay-close{position:absolute;top:1rem;right:1.1rem;background:none;border:1px solid var(--line);color:var(--muted);
+border-radius:6px;width:1.8rem;height:1.8rem;cursor:pointer;font-size:.9rem;line-height:1}
+.perf-overlay-close:hover{color:var(--flag);border-color:var(--flag)}
 #perf .perf-mode-label{display:block;margin-bottom:.4rem}
 .perf-rows{display:grid;gap:.5rem}
 .perf-row{display:grid;grid-template-columns:150px 34px repeat(3,1fr);align-items:end;gap:.9rem}
