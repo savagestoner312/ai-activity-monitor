@@ -88,3 +88,33 @@ pub struct RiverLane {
 pub struct RiverResponse {
     pub lanes: Vec<RiverLane>,
 }
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ToolPerf {
+    pub tool: String,
+    pub proc_count: u32,
+    pub cpu_pct: f32,
+    pub mem_bytes: u64,
+    pub gpu_pct: Option<f32>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PerfTotal {
+    pub proc_count: u32,
+    pub cpu_pct: f32,
+    pub mem_bytes: u64,
+    pub gpu_pct: Option<f32>,
+}
+
+/// `tools`/`total` hold time-averaged values on a non-live window (unlike
+/// StateSummary's running/devices, which are empty when not live) — "average
+/// load in this window" is well-defined for the past, so the frontend swaps
+/// rendering mode (animated vs. static) rather than hiding the panel.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PerfSummary {
+    pub ts: String,
+    pub is_live: bool,
+    pub gpu_available: bool,
+    pub total: PerfTotal,
+    pub tools: Vec<ToolPerf>,
+}

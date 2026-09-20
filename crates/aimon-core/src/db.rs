@@ -9,6 +9,8 @@ CREATE TABLE IF NOT EXISTS process_events(ts TEXT, event TEXT, pid INT, name TEX
 CREATE TABLE IF NOT EXISTS child_events(ts TEXT, parent_pid INT, parent_name TEXT, pid INT, name TEXT, cmdline TEXT, flagged INT);
 CREATE TABLE IF NOT EXISTS net_events(ts TEXT, pid INT, name TEXT, raddr TEXT, rport INT, rhost TEXT, status TEXT);
 CREATE TABLE IF NOT EXISTS device_events(ts TEXT, device TEXT, app TEXT, started TEXT, stopped TEXT, is_ai INT);
+CREATE TABLE IF NOT EXISTS perf_samples(ts TEXT, tool TEXT, proc_count INT, cpu_pct REAL, mem_bytes INT, gpu_pct REAL);
+CREATE INDEX IF NOT EXISTS idx_perf_samples_ts ON perf_samples(ts);
 ";
 
 use rusqlite::{params, Connection, OpenFlags, Result};
@@ -104,6 +106,30 @@ pub fn insert_device_event(
     Ok(())
 }
 
+pub fn insert_perf_sample(
+    conn: &Connection,
+    ts: &str,
+    tool: &str,
+    proc_count: u32,
+    cpu_pct: f32,
+    mem_bytes: u64,
+    gpu_pct: Option<f32>,
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO perf_samples VALUES(?1,?2,?3,?4,?5,?6)",
+        params![ts, tool, proc_count, cpu_pct, mem_bytes, gpu_pct],
+    )?;
+    Ok(())
+}
+
+/// Deletes perf_samples rows older than `cutoff`, returning the count
+/// deleted. Unlike every other table here, perf_samples inserts every cycle
+/// for whatever's currently running (not just on state changes), so unlike
+/// process_events et al. it needs active pruning to avoid unbounded growth.
+pub fn prune_perf_samples(conn: &Connection, cutoff: &str) -> Result<usize> {
+    conn.execute("DELETE FROM perf_samples WHERE ts < ?1", params![cutoff])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -118,10 +144,10 @@ mod tests {
     }
 
     #[test]
-    fn schema_creates_all_four_tables() {
+    fn schema_creates_all_five_tables() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(SCHEMA).unwrap();
-        for table in ["process_events", "child_events", "net_events", "device_events"] {
+        for table in ["process_events", "child_events", "net_events", "device_events", "perf_samples"] {
             let count: i64 = conn
                 .query_row(
                     "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
@@ -131,5 +157,21 @@ mod tests {
                 .unwrap();
             assert_eq!(count, 1, "missing table {table}");
         }
+    }
+
+    #[test]
+    fn perf_samples_insert_and_prune() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        insert_perf_sample(&conn, "2026-09-19T10:00:00", "claude.exe", 2, 12.5, 800_000_000, Some(3.1)).unwrap();
+        insert_perf_sample(&conn, "2026-09-19T12:00:00", "claude.exe", 1, 5.0, 400_000_000, None).unwrap();
+
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM perf_samples", [], |r| r.get(0)).unwrap();
+        assert_eq!(count, 2);
+
+        let deleted = prune_perf_samples(&conn, "2026-09-19T11:00:00").unwrap();
+        assert_eq!(deleted, 1);
+        let remaining: i64 = conn.query_row("SELECT COUNT(*) FROM perf_samples", [], |r| r.get(0)).unwrap();
+        assert_eq!(remaining, 1);
     }
 }

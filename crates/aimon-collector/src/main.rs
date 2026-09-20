@@ -7,12 +7,14 @@
 //! original — this also means stdout/println! go nowhere in practice.
 #![windows_subsystem = "windows"]
 
-use aimon_core::{db, net::NetTracker, paths, process::ProcSnapshot, registry, rules};
+use aimon_core::{db, gpu::GpuSampler, net::NetTracker, paths, process::ProcSnapshot, registry, rules};
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 const POLL_SECONDS: u64 = 3;
 const CACHE_CLEAR_THRESHOLD: usize = 50_000;
+const PERF_PRUNE_EVERY_N_CYCLES: u64 = 1200; // ~hourly at 3s cadence
+const PERF_RETENTION_HOURS: i64 = 48;
 
 fn main() {
     let db_dir = paths::app_dir();
@@ -25,6 +27,8 @@ fn main() {
     let mut net = NetTracker::new();
     let mut seen_dev: HashMap<(String, String), (String, String)> = HashMap::new();
     let mut snap = ProcSnapshot::new();
+    let mut gpu = GpuSampler::new();
+    let mut cycle: u64 = 0;
 
     // Baseline device usage so we only log new sessions from here on.
     for d in registry::read_device_usage() {
@@ -51,6 +55,26 @@ fn main() {
             }
         }
         ai_pids = current;
+
+        let watched: HashSet<u32> = ai_pids.keys().copied().collect();
+        let gpu_by_pid = gpu.sample(&watched);
+        let mut perf_by_tool: HashMap<String, (u32, f32, u64, Option<f32>)> = HashMap::new();
+        for (pid, info) in &ai_pids {
+            let cpu = snap.cpu_percent(*pid).unwrap_or(0.0);
+            let mem = snap.mem_bytes(*pid).unwrap_or(0);
+            let entry = perf_by_tool.entry(info.name.clone()).or_insert((0, 0.0, 0, None));
+            entry.0 += 1;
+            entry.1 += cpu;
+            entry.2 += mem;
+            entry.3 = match (entry.3, gpu_by_pid.get(pid).copied()) {
+                (a, None) => a,
+                (None, b) => b,
+                (Some(a), Some(b)) => Some(a + b),
+            };
+        }
+        for (tool, (proc_count, cpu_pct, mem_bytes, gpu_pct)) in perf_by_tool {
+            let _ = db::insert_perf_sample(&conn, &ts, &tool, proc_count, cpu_pct, mem_bytes, gpu_pct);
+        }
 
         for (&pid, info) in &ai_pids {
             for child_pid in snap.descendants(pid) {
@@ -90,6 +114,14 @@ fn main() {
         net.clear_if_large();
         if seen_children.len() > CACHE_CLEAR_THRESHOLD {
             seen_children.clear();
+        }
+
+        cycle += 1;
+        if cycle % PERF_PRUNE_EVERY_N_CYCLES == 0 {
+            let cutoff = (chrono::Local::now() - chrono::Duration::hours(PERF_RETENTION_HOURS))
+                .format("%Y-%m-%dT%H:%M:%S")
+                .to_string();
+            let _ = db::prune_perf_samples(&conn, &cutoff);
         }
 
         std::thread::sleep(Duration::from_secs(POLL_SECONDS));

@@ -3,7 +3,7 @@
 //! tail-only `events(after)` / hardcoded-to-"today" `state()` into arbitrary
 //! `[start, end)` windows, which is what makes history browsing possible.
 use aimon_api_types::{
-    Counts, DeviceChip, EndpointStat, EventKind, RiverBucket, RiverLane, RunningTool, StateSummary, UnifiedEvent,
+    Counts, DeviceChip, EndpointStat, EventKind, RiverBucket, RiverLane, RunningTool, StateSummary, ToolPerf, UnifiedEvent,
 };
 use chrono::{Duration, NaiveDateTime};
 use rusqlite::{params, Connection, Result};
@@ -190,6 +190,30 @@ pub fn river_for_range(conn: &Connection, start: &str, end: &str, bucket_seconds
             RiverLane { tool, buckets }
         })
         .collect())
+}
+
+/// Per-tool average CPU%/memory/GPU% over `[start, end)`. Used for BOTH the
+/// live view (caller passes a narrow trailing window, e.g. the last ~8s) and
+/// historical scrub (caller passes the full viewed window) — one function,
+/// not two, so a tool that stopped ages out of the live view naturally
+/// (no rows in a narrow recent window) instead of a "most recent row per
+/// tool" query showing its last-ever reading forever.
+pub fn perf_in_range(conn: &Connection, start: &str, end: &str) -> Result<Vec<ToolPerf>> {
+    let sql = "SELECT tool, MAX(proc_count), AVG(cpu_pct), AVG(mem_bytes), AVG(gpu_pct)
+               FROM perf_samples WHERE ts>=?1 AND ts<?2 GROUP BY tool";
+    let mut stmt = conn.prepare(sql)?;
+    let result = stmt
+        .query_map(params![start, end], |r| {
+            Ok(ToolPerf {
+                tool: r.get(0)?,
+                proc_count: r.get(1)?,
+                cpu_pct: r.get(2)?,
+                mem_bytes: r.get::<_, f64>(3)? as u64,
+                gpu_pct: r.get(4)?,
+            })
+        })?
+        .collect();
+    result
 }
 
 // --- Daily report queries (aimon-report), typed ports of report.py's four
@@ -397,5 +421,40 @@ mod tests {
         let devs = device_events_for_day(&conn, "2026-09-19").unwrap();
         assert_eq!(devs.len(), 1);
         assert_eq!(devs[0].device, "microphone");
+    }
+
+    #[test]
+    fn perf_in_range_averages_per_tool_and_excludes_out_of_range() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(db::SCHEMA).unwrap();
+        db::insert_perf_sample(&conn, "2026-09-19T10:00:00", "claude.exe", 2, 10.0, 200_000_000, Some(1.0)).unwrap();
+        db::insert_perf_sample(&conn, "2026-09-19T10:00:03", "claude.exe", 2, 20.0, 300_000_000, Some(3.0)).unwrap();
+        db::insert_perf_sample(&conn, "2026-09-19T10:00:00", "ollama.exe", 1, 5.0, 100_000_000, None).unwrap();
+        // Outside the queried window — must not affect the average.
+        db::insert_perf_sample(&conn, "2026-09-19T12:00:00", "claude.exe", 1, 99.0, 999_000_000, Some(99.0)).unwrap();
+
+        let rows = perf_in_range(&conn, "2026-09-19T09:00:00", "2026-09-19T11:00:00").unwrap();
+        let claude = rows.iter().find(|r| r.tool == "claude.exe").unwrap();
+        assert_eq!(claude.proc_count, 2);
+        assert_eq!(claude.cpu_pct, 15.0);
+        assert_eq!(claude.mem_bytes, 250_000_000);
+        assert_eq!(claude.gpu_pct, Some(2.0));
+
+        let ollama = rows.iter().find(|r| r.tool == "ollama.exe").unwrap();
+        assert_eq!(ollama.gpu_pct, None);
+    }
+
+    #[test]
+    fn perf_in_range_ages_out_stopped_tools() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(db::SCHEMA).unwrap();
+        // A tool that stopped hours ago — its last row must not show up when
+        // querying a narrow "live" window at a much later "now".
+        db::insert_perf_sample(&conn, "2026-09-19T08:00:00", "old-tool.exe", 1, 50.0, 500_000_000, None).unwrap();
+        db::insert_perf_sample(&conn, "2026-09-19T12:00:00", "claude.exe", 1, 5.0, 100_000_000, None).unwrap();
+
+        let live_window = perf_in_range(&conn, "2026-09-19T11:59:52", "2026-09-19T12:00:01").unwrap();
+        assert_eq!(live_window.len(), 1);
+        assert_eq!(live_window[0].tool, "claude.exe");
     }
 }
