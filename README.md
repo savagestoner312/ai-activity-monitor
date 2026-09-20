@@ -1,6 +1,6 @@
 # AI Activity Monitor
 
-See what AI tools are doing on your Windows PC, live: which ones are running, what commands they run, which services they talk to, and when anything uses your mic or camera.
+See what AI tools are doing on your Windows PC, live: which ones are running, what commands they run, which services they talk to, how much CPU/memory/GPU they're using, and when anything uses your mic or camera.
 
 ![Dashboard](docs/dashboard-preview.png)
 
@@ -8,12 +8,17 @@ See what AI tools are doing on your Windows PC, live: which ones are running, wh
 
 - AI tools starting and stopping (Claude, Copilot, ChatGPT, Ollama, Cursor, LM Studio, GitHub Copilot CLI, Claude Code, and more)
 - Commands AI tools spawn (PowerShell, cmd, git, python, curl...), with risky ones flagged
-- Network endpoints each AI tool connects to
+- Network endpoints each AI tool connects to, with reverse DNS so you see hostnames instead of raw IPs where one exists
+- CPU, memory, and GPU usage per AI tool, live — a compact retro VU-meter readout that expands into a full per-tool breakdown
 - Microphone and camera use by any app, from Windows' own privacy records
 
 Browse history with the timeframe dropdown and look-back slider — not just live activity, the full range you've collected. Drag back to freeze on a past window; jump back to "Live" any time.
 
-All data stays local in `%LOCALAPPDATA%\AIMonitor\aimon.db`. The dashboard listens on `127.0.0.1` only.
+Customize it from the gear icon in the header: pick a curated color theme (or tweak individual colors on top), show/hide any section, and set your own background image.
+
+![Theme + performance overlay](docs/dashboard-theme-preview.png)
+
+All data stays local in `%LOCALAPPDATA%\AIMonitor\aimon.db`. The dashboard listens on `127.0.0.1` only. Theme/layout/background preferences live only in your browser's local storage — never sent anywhere.
 
 ## Quick start
 
@@ -55,7 +60,7 @@ To uninstall:
 | Path | Purpose |
 |---|---|
 | `crates/aimon-collector` | Polls (every 3 seconds by default) and writes events to SQLite |
-| `crates/aimon-dashboard` | Local web server, JSON API (`/api/state`, `/api/events`, `/api/meta`, `/api/river`), and the embedded frontend |
+| `crates/aimon-dashboard` | Local web server, JSON API (`/api/state`, `/api/events`, `/api/meta`, `/api/river`, `/api/perf`), and the embedded frontend |
 | `crates/aimon-report` | Static daily HTML report |
 | `crates/aimon-core` | Shared schema, DB access, process/network/registry monitoring, AI-tool matching rules |
 | `crates/aimon-api-types` | Wire types shared between the dashboard server and the frontend |
@@ -69,6 +74,7 @@ To add AI tools to watch, edit `AI_NAME_MATCH` / `AI_CMDLINE_MATCH` in `crates/a
 - Browser-based AI (ChatGPT or Claude in a browser tab) shows up as the browser, not the AI service.
 - Commands that finish faster than the poll interval can be missed between polls (see below to tune it).
 - Mic/camera detection reads Windows registry data and has only been validated on Windows 11.
+- Some endpoints show as a raw IP instead of a hostname — that's usually a real absence of a reverse-DNS (PTR) record on the provider's side (common for CDN/edge IPs), not a lookup failure on this end.
 
 ### Tuning the poll interval
 
@@ -88,4 +94,4 @@ To change it: write a single integer (seconds, clamped to 1-30) to `%LOCALAPPDAT
 
 ## Contributing
 
-Work on a branch and open a pull request against `main`. Never commit a real `aimon.db` or generated reports; they contain your activity history.
+Work on a branch and open a pull request against `master`. Never commit a real `aimon.db` or generated reports; they contain your activity history.
