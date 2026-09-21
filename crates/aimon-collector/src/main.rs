@@ -39,6 +39,12 @@ fn main() {
     let mut gpu = GpuSampler::new();
     let mut cycle: u64 = 0;
 
+    // Processes already running now are recorded as `baseline`, not `start`:
+    // the collector didn't see them launch. The session marker scopes
+    // "currently running" to what this session has confirmed.
+    let _ = db::insert_session_marker(&conn, &db::now_str(), my_pid);
+    let mut first_cycle = true;
+
     // Baseline device usage so we only log new sessions from here on.
     for d in registry::read_device_usage() {
         seen_dev.insert((d.device, d.app), (d.started, d.stopped));
@@ -53,14 +59,22 @@ fn main() {
         snap.refresh();
         let current = snap.current_ai_processes(my_pid);
 
+        let new_event = if first_cycle { "baseline" } else { "start" };
+        first_cycle = false;
         for (pid, info) in &current {
             if !ai_pids.contains_key(pid) {
-                let _ = db::insert_process_event(&conn, &ts, "start", info.pid, &info.name, &info.exe, &info.cmdline);
+                let _ = db::insert_process_event(
+                    &conn, &ts, new_event, info.pid, &info.name, &info.exe, &info.cmdline, &info.app,
+                    info.started.as_deref(),
+                );
             }
         }
         for (pid, info) in &ai_pids {
             if !current.contains_key(pid) {
-                let _ = db::insert_process_event(&conn, &ts, "stop", info.pid, &info.name, &info.exe, &info.cmdline);
+                let _ = db::insert_process_event(
+                    &conn, &ts, "stop", info.pid, &info.name, &info.exe, &info.cmdline, &info.app,
+                    info.started.as_deref(),
+                );
             }
         }
         ai_pids = current;
@@ -71,7 +85,8 @@ fn main() {
         for (pid, info) in &ai_pids {
             let cpu = snap.cpu_percent(*pid).unwrap_or(0.0);
             let mem = snap.mem_bytes(*pid).unwrap_or(0);
-            let entry = perf_by_tool.entry(info.name.clone()).or_insert((0, 0.0, 0, None));
+            // Per app, so an Electron app's helpers add up to one row.
+            let entry = perf_by_tool.entry(info.app.clone()).or_insert((0, 0.0, 0, None));
             entry.0 += 1;
             entry.1 += cpu;
             entry.2 += mem;
@@ -96,7 +111,9 @@ fn main() {
                 if let Some(ci) = snap.info(child_pid) {
                     seen_children.insert(ci.pid);
                     let flagged = rules::is_sensitive_child(&ci.name);
-                    let _ = db::insert_child_event(&conn, &ts, pid, &info.name, ci.pid, &ci.name, &ci.cmdline, flagged);
+                    let _ = db::insert_child_event(
+                        &conn, &ts, pid, &info.name, &info.app, ci.pid, &ci.name, &ci.cmdline, flagged,
+                    );
                 }
             }
         }
@@ -104,7 +121,9 @@ fn main() {
         let ai_pid_list: Vec<u32> = ai_pids.keys().copied().collect();
         for (nc, host) in net.poll_new_connections(&ai_pid_list) {
             if let Some(info) = ai_pids.get(&nc.pid) {
-                let _ = db::insert_net_event(&conn, &ts, nc.pid, &info.name, &nc.raddr.to_string(), nc.rport, &host, &nc.status);
+                let _ = db::insert_net_event(
+                    &conn, &ts, nc.pid, &info.name, &info.app, &nc.raddr.to_string(), nc.rport, &host, &nc.status,
+                );
             }
         }
 

@@ -10,27 +10,27 @@ use std::collections::{HashMap, HashSet};
 use windows::core::PCWSTR;
 use windows::Win32::System::Performance::{
     PdhAddCounterW, PdhCloseQuery, PdhCollectQueryData, PdhGetFormattedCounterArrayW, PdhOpenQueryW, PDH_FMT_COUNTERVALUE_ITEM_W,
-    PDH_FMT_DOUBLE,
+    PDH_FMT_DOUBLE, PDH_HCOUNTER, PDH_HQUERY,
 };
 
 const COUNTER_PATH: &str = "\\GPU Engine(*)\\Utilization Percentage";
 const PDH_SUCCESS: u32 = 0;
 
 pub struct GpuSampler {
-    query: isize,
-    counter: isize,
+    query: PDH_HQUERY,
+    counter: PDH_HCOUNTER,
     available: bool,
 }
 
 impl GpuSampler {
     pub fn new() -> Self {
         unsafe {
-            let mut query: isize = 0;
+            let mut query = PDH_HQUERY::default();
             if PdhOpenQueryW(PCWSTR::null(), 0, &mut query) != PDH_SUCCESS {
                 return Self::unavailable();
             }
             let path_wide: Vec<u16> = COUNTER_PATH.encode_utf16().chain(std::iter::once(0)).collect();
-            let mut counter: isize = 0;
+            let mut counter = PDH_HCOUNTER::default();
             if PdhAddCounterW(query, PCWSTR(path_wide.as_ptr()), 0, &mut counter) != PDH_SUCCESS {
                 let _ = PdhCloseQuery(query);
                 return Self::unavailable();
@@ -43,7 +43,7 @@ impl GpuSampler {
     }
 
     fn unavailable() -> Self {
-        Self { query: 0, counter: 0, available: false }
+        Self { query: PDH_HQUERY::default(), counter: PDH_HCOUNTER::default(), available: false }
     }
 
     /// Summed GPU% per watched pid (across all of that pid's engine-type

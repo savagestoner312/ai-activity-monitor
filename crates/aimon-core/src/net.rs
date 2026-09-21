@@ -1,7 +1,7 @@
 //! Per-process network connection enumeration + cached reverse DNS, ported
 //! from the Python collector's `psutil.Process(pid).net_connections()` +
 //! `socket.gethostbyaddr()` calls.
-#![cfg(windows)]
+#![cfg(any(windows, target_os = "macos"))]
 
 use netstat2::{get_sockets_info, AddressFamilyFlags, ProtocolFlags, ProtocolSocketInfo};
 use std::collections::{HashMap, HashSet};

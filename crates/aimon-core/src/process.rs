@@ -1,6 +1,6 @@
 //! Process enumeration and AI-tool matching, ported from the Python
 //! collector's `psutil`-based process walk.
-#![cfg(windows)]
+#![cfg(any(windows, target_os = "macos"))]
 
 use crate::rules::is_ai;
 use std::collections::HashMap;
@@ -12,6 +12,11 @@ pub struct ProcInfo {
     pub name: String,
     pub exe: String,
     pub cmdline: String,
+    /// See `crate::apps::app_for`.
+    pub app: String,
+    /// When the process itself started (local time, the DB's timestamp
+    /// format), if the OS reports it.
+    pub started: Option<String>,
 }
 
 pub struct ProcSnapshot {
@@ -76,8 +81,14 @@ impl ProcSnapshot {
             .map(|s| s.to_string_lossy().to_string())
             .collect::<Vec<_>>()
             .join(" ");
-        cmdline.truncate(2000);
-        ProcInfo { pid: pid.as_u32(), name, exe, cmdline }
+        truncate_at_char_boundary(&mut cmdline, 2000);
+        let app = crate::apps::app_for(&name, &exe, &cmdline);
+        let started = match proc.start_time() {
+            0 => None,
+            secs => chrono::DateTime::from_timestamp(secs as i64, 0)
+                .map(|t| t.with_timezone(&chrono::Local).format("%Y-%m-%dT%H:%M:%S").to_string()),
+        };
+        ProcInfo { pid: pid.as_u32(), name, exe, cmdline, app, started }
     }
 
     pub fn info(&self, pid: u32) -> Option<ProcInfo> {
@@ -132,5 +143,16 @@ impl ProcSnapshot {
             }
             cur = self.parent_of(cur)?;
         }
+    }
+}
+
+/// `String::truncate` panics mid-character; command lines are arbitrary UTF-8.
+fn truncate_at_char_boundary(s: &mut String, max: usize) {
+    if s.len() > max {
+        let mut end = max;
+        while !s.is_char_boundary(end) {
+            end -= 1;
+        }
+        s.truncate(end);
     }
 }

@@ -2,9 +2,20 @@ use std::path::PathBuf;
 
 /// `%LOCALAPPDATA%\AIMonitor`, falling back to `.` if the env var is unset —
 /// mirrors Python's `os.environ.get("LOCALAPPDATA", ".")`.
+#[cfg(not(target_os = "macos"))]
 pub fn app_dir() -> PathBuf {
     let base = std::env::var_os("LOCALAPPDATA").unwrap_or_else(|| ".".into());
     PathBuf::from(base).join("AIMonitor")
+}
+
+/// `~/Library/Application Support/AIMonitor`, falling back to `.` if `HOME`
+/// is unset.
+#[cfg(target_os = "macos")]
+pub fn app_dir() -> PathBuf {
+    match std::env::var_os("HOME") {
+        Some(home) => PathBuf::from(home).join("Library/Application Support/AIMonitor"),
+        None => PathBuf::from(".").join("AIMonitor"),
+    }
 }
 
 pub fn db_path() -> PathBuf {

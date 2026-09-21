@@ -71,7 +71,7 @@ struct EventsQuery {
 async fn get_meta(State(state): State<Arc<AppState>>) -> Json<aimon_api_types::MetaResponse> {
     let now = db::now_str();
     let oldest_ts = open_ro(&state).ok().and_then(|c| queries::oldest_event_ts(&c).ok().flatten());
-    Json(aimon_api_types::MetaResponse { oldest_ts, now })
+    Json(aimon_api_types::MetaResponse { oldest_ts, now, os: std::env::consts::OS.to_string() })
 }
 
 async fn get_events(State(state): State<Arc<AppState>>, Query(q): Query<EventsQuery>) -> Json<Vec<UnifiedEvent>> {
@@ -101,6 +101,7 @@ async fn get_state(State(state): State<Arc<AppState>>, Query(q): Query<StateQuer
             counts: Default::default(),
             devices: Vec::new(),
             endpoints: Vec::new(),
+            apps: Vec::new(),
         }
     });
     Json(summary)
@@ -155,6 +156,14 @@ async fn get_perf(State(state): State<Arc<AppState>>, Query(q): Query<PerfQuery>
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
     let state = Arc::new(AppState { db_path: paths::db_path() });
+    // Bring an older aimon.db up to the current schema before the first
+    // read-only query, in case the dashboard starts before the collector. A
+    // DB that doesn't exist yet is left for the collector to create.
+    if state.db_path.exists()
+        && let Err(e) = db::open_rw(&state.db_path)
+    {
+        eprintln!("aimon.db migration failed: {e}");
+    }
     let app = Router::new()
         .route("/api/meta", get(get_meta))
         .route("/api/events", get(get_events))

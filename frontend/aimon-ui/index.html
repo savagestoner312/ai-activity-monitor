@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>AI activity on this PC</title>
+  <title>AI activity</title>
   <style>
 :root{--bg:#16202e;--panel:#1c2838;--line:#2a3a50;--fg:#dfe7f1;--muted:#8a9bb0;
 --cmd:#f2a541;--net:#5bc0eb;--proc:#b9a7ff;--dev:#7ee0b5;--flag:#ff6b7d;
@@ -70,19 +70,42 @@ h2{font-size:.95rem;font-weight:600;margin:0 0 .75rem}
 #filters button[aria-pressed=true]{color:var(--fg);border-color:var(--fg)}
 button:focus-visible{outline:2px solid var(--net);outline-offset:2px}
 #feed{max-height:460px;overflow:auto;margin:0;padding:0;list-style:none}
-#feed li{display:grid;grid-template-columns:62px 8px 130px minmax(0,1fr);gap:.6rem;align-items:baseline;padding:.35rem 0;border-top:1px solid var(--line)}
+#feed li{display:grid;grid-template-columns:auto 8px 130px minmax(0,1fr);gap:.6rem;align-items:baseline;padding:.35rem 0;border-top:1px solid var(--line)}
+#feed li.routine{opacity:.55}
+#feed li.empty{display:block}
+#feed details summary{cursor:pointer;list-style:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#feed details summary::-webkit-details-marker{display:none}
+#feed details[open] summary{white-space:normal}
+#feed .more{display:grid;gap:.3rem;margin:.4rem 0 .2rem;padding:.5rem .6rem;border-left:2px solid var(--line)}
+#feed .more code{color:var(--muted);white-space:pre-wrap}
+#feed .facts{color:var(--muted);font-size:.78rem;word-break:break-all}
+.feed-toggle{display:flex;align-items:center;gap:.35rem;margin-left:auto;font-size:.8rem;color:var(--muted);cursor:pointer}
+.badge{display:inline-block;font:500 .72rem var(--ui);border:1px solid var(--line);border-radius:4px;padding:0 .35rem;margin-left:.45rem;color:var(--muted);vertical-align:1px}
 #feed time{color:var(--muted);font-variant-numeric:tabular-nums;font-size:.8rem}
-#feed .dot{width:8px;height:8px;border-radius:50%;align-self:center}
+#feed .dot{width:8px;height:8px;border-radius:50%;align-self:start;margin-top:.45em}
 #feed .tool{font-size:.82rem;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 #feed code{font:12.5px var(--code);word-break:break-all}
 #feed li.flag code{color:var(--flag)}
 dl{margin:0;display:grid;grid-template-columns:1fr auto;row-gap:.5rem}
 dt{color:var(--muted)}dd{margin:0;font-weight:600;font-variant-numeric:tabular-nums;text-align:right}
 dd.warn{color:var(--flag)}
-.ep{margin-top:.55rem}.ep span{display:flex;justify-content:space-between;font-size:.8rem}
+dd .sub{display:block;margin:0;font-size:.74rem;font-weight:400}
+.ep{margin-top:.7rem}.ep>span{display:flex;justify-content:space-between;gap:.5rem;font-size:.8rem}
+.ep-host{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ep-who{display:block;color:var(--muted);font-size:.74rem;margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ep-more{margin:.7rem 0 0}
+.table-wrap{overflow-x:auto}
+.apps-table{width:100%;border-collapse:collapse;font-size:.85rem}
+.apps-table th{text-align:left;font-weight:500;color:var(--muted);font-size:.78rem;padding:0 .75rem .4rem 0;white-space:nowrap}
+.apps-table td{padding:.4rem .75rem .4rem 0;border-top:1px solid var(--line);white-space:nowrap}
+.apps-table .num{text-align:right;font-variant-numeric:tabular-nums}
+.apps-table .app-name{font-weight:600}
+.apps-table .muted{color:var(--muted)}
+.apps-table tr.idle .app-name{font-weight:400;color:var(--muted)}
+.warn{color:var(--flag)}
 .bar{height:4px;background:var(--line);border-radius:2px;margin-top:3px}.bar i{display:block;height:100%;background:var(--net);border-radius:2px}
 .empty{color:var(--muted);padding:1rem 0}
-aside{display:grid;gap:1.25rem;align-content:start}
+aside{display:grid;grid-template-columns:minmax(0,1fr);gap:1.25rem;align-content:start;min-width:0}
 #time-controls select{font:inherit;background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:.25rem .5rem}
 #time-controls button{font:inherit;font-size:.82rem;background:none;color:var(--muted);border:1px solid var(--line);border-radius:6px;padding:.25rem .7rem;cursor:pointer}
 #time-controls button.hot{color:var(--flag);border-color:var(--flag)}
