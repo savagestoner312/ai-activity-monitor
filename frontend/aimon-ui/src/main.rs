@@ -5,7 +5,7 @@
 //! "now" the view live-tails exactly like the original; dragging it back
 //! freezes the view on a fixed historical window and stops polling until
 //! the slider moves again.
-use aimon_api_types::{EventKind, MetaResponse, PerfSummary, StateSummary, UnifiedEvent};
+use aimon_api_types::{AppSummary, EventKind, MetaResponse, PerfSummary, StateSummary, ToolPerf, UnifiedEvent};
 use gloo_net::http::Request;
 use gloo_timers::future::TimeoutFuture;
 use leptos::prelude::*;
@@ -24,10 +24,10 @@ fn main() {
     leptos::mount::mount_to_body(App);
 }
 
-/// Strips a Windows path down to the filename, then strips a trailing
+/// Strips a Windows or Unix path down to the filename, then strips a trailing
 /// `_<13 lowercase-alphanumeric>` suffix — port of the original JS `nice()`.
 fn nice_name(tool: &str) -> String {
-    let last = tool.rsplit('\\').next().unwrap_or(tool);
+    let last = tool.rsplit(['\\', '/']).next().unwrap_or(tool);
     if last.len() > 14 {
         let (head, tail) = last.split_at(last.len() - 14);
         if tail.starts_with('_') && tail[1..].chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()) {
@@ -64,6 +64,81 @@ fn fmt_local(ms: f64) -> String {
     let date = format!("{}/{}/{}", d.get_month() as u32 + 1, d.get_date() as u32, d.get_full_year() as u32);
     let time = String::from(d.to_locale_time_string("en-US"));
     format!("{date} {time}")
+}
+
+/// "45s", "14m", "2h 13m", "3d 4h".
+fn fmt_duration(secs: i64) -> String {
+    let secs = secs.max(0);
+    match secs {
+        s if s < 60 => format!("{s}s"),
+        s if s < 3600 => format!("{}m", s / 60),
+        s if s < 86_400 => format!("{}h {}m", s / 3600, s % 3600 / 60),
+        s => format!("{}d {}h", s / 86_400, s % 86_400 / 3600),
+    }
+}
+
+/// How long ago `ts` was, as a duration ("2h 13m").
+fn fmt_since(ts: &str) -> String {
+    fmt_duration(((js_sys::Date::now() - js_time_ms(ts)) / 1000.0) as i64)
+}
+
+/// A feed timestamp: `HH:MM:SS`, or `M/D HH:MM:SS` when the window spans days.
+fn fmt_feed_time(ts: &str, with_date: bool) -> String {
+    let time = ts.get(11..).unwrap_or(ts);
+    match (with_date, ts.get(5..7), ts.get(8..10)) {
+        (true, Some(m), Some(d)) => format!("{}/{} {time}", m.trim_start_matches('0'), d.trim_start_matches('0')),
+        _ => time.to_string(),
+    }
+}
+
+/// An axis tick: `HH:MM`, with `M/D` in front for multi-day windows.
+fn fmt_axis(ms: f64, span_ms: f64) -> String {
+    let d = js_sys::Date::new(&wasm_bindgen::JsValue::from_f64(ms));
+    let hm = format!("{:02}:{:02}", d.get_hours(), d.get_minutes());
+    if span_ms > 86_400_000.0 { format!("{}/{} {hm}", d.get_month() + 1, d.get_date()) } else { hm }
+}
+
+/// The app an event belongs to, falling back to the process name for events
+/// from a server that predates app grouping.
+fn event_app(e: &UnifiedEvent) -> String {
+    if e.app.is_empty() { nice_name(&e.tool) } else { e.app.clone() }
+}
+
+/// What a feed row shows before it's expanded.
+fn event_headline(e: &UnifiedEvent) -> String {
+    let summary = if e.summary.is_empty() { e.detail.as_str() } else { e.summary.as_str() };
+    match e.kind {
+        EventKind::Command => {
+            // Prefix the spawned program unless the summary already starts
+            // with it (`/usr/bin/mcpbridge` for `mcpbridge`).
+            let program = summary.split_whitespace().next().unwrap_or("");
+            let program = program.rsplit(['/', '\\']).next().unwrap_or(program);
+            match &e.child {
+                Some(child) if !program.eq_ignore_ascii_case(child) => format!("{child} \u{203a} {summary}"),
+                _ => summary.to_string(),
+            }
+        }
+        EventKind::Process => {
+            let action = match (e.action.as_deref(), e.duration_s) {
+                (Some("baseline"), _) => "already running".to_string(),
+                (Some("stop"), Some(d)) => format!("stopped \u{b7} ran {}", fmt_duration(d)),
+                (Some("stop"), None) => "stopped".to_string(),
+                _ => "launched".to_string(),
+            };
+            format!("{action} \u{b7} {summary}")
+        }
+        _ => summary.to_string(),
+    }
+}
+
+/// Identity for de-duplicating live-tail batches, which overlap by design:
+/// each poll re-asks from the last timestamp it saw, inclusive.
+fn event_key(e: &UnifiedEvent) -> String {
+    format!("{}|{:?}|{:?}|{}", e.ts, e.kind, e.pid, e.detail)
+}
+
+fn machine_word(meta: Option<&MetaResponse>) -> &'static str {
+    if meta.is_some_and(|m| m.os == "macos") { "Mac" } else { "PC" }
 }
 
 fn kind_color_var(kind: EventKind) -> &'static str {
@@ -278,9 +353,14 @@ impl ColorField {
     }
 }
 
+// `default` so a settings blob saved before a section existed still loads
+// (with the new section shown) instead of failing to parse and resetting
+// everything, theme included.
 #[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 struct SectionVisibility {
     perf: bool,
+    apps: bool,
     river: bool,
     feed: bool,
     window_counts: bool,
@@ -292,7 +372,7 @@ struct SectionVisibility {
 
 impl Default for SectionVisibility {
     fn default() -> Self {
-        Self { perf: true, river: true, feed: true, window_counts: true, endpoints: true }
+        Self { perf: true, apps: true, river: true, feed: true, window_counts: true, endpoints: true }
     }
 }
 
@@ -301,6 +381,7 @@ impl Default for SectionVisibility {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SectionField {
     Perf,
+    Apps,
     River,
     Feed,
     WindowCounts,
@@ -308,8 +389,9 @@ enum SectionField {
 }
 
 impl SectionField {
-    const ALL: [(SectionField, &'static str); 5] = [
+    const ALL: [(SectionField, &'static str); 6] = [
         (SectionField::Perf, "AI resource use"),
+        (SectionField::Apps, "Apps"),
         (SectionField::River, "Activity timeline"),
         (SectionField::Feed, "Live feed"),
         (SectionField::WindowCounts, "Window counts"),
@@ -319,6 +401,7 @@ impl SectionField {
     fn get(self, s: &SectionVisibility) -> bool {
         match self {
             SectionField::Perf => s.perf,
+            SectionField::Apps => s.apps,
             SectionField::River => s.river,
             SectionField::Feed => s.feed,
             SectionField::WindowCounts => s.window_counts,
@@ -329,6 +412,7 @@ impl SectionField {
     fn set(self, s: &mut SectionVisibility, v: bool) {
         match self {
             SectionField::Perf => s.perf = v,
+            SectionField::Apps => s.apps = v,
             SectionField::River => s.river = v,
             SectionField::Feed => s.feed = v,
             SectionField::WindowCounts => s.window_counts = v,
@@ -348,6 +432,7 @@ struct BackgroundImage {
 struct SettingsBlob {
     theme: ThemeColors,
     theme_preset: PresetId,
+    #[serde(default)]
     sections: SectionVisibility,
 }
 
@@ -607,12 +692,25 @@ fn App() -> impl IntoView {
                                 last_ts = Some(first.ts.clone());
                             }
                             if incremental {
-                                shared.events.update(|all| {
-                                    let old = mem::take(all);
-                                    new_events.extend(old);
-                                    new_events.truncate(2000);
-                                    *all = new_events;
-                                });
+                                // The newest events of the last batch come back again
+                                // (the lower bound is inclusive); drop the repeats, and
+                                // leave the list (and every view of it) alone when
+                                // nothing is actually new.
+                                if let Some(oldest_new) = new_events.last().map(|e| e.ts.clone()) {
+                                    let seen: std::collections::HashSet<String> = shared.events.with_untracked(|all| {
+                                        all.iter().take_while(|e| e.ts >= oldest_new).map(event_key).collect()
+                                    });
+                                    new_events.retain(|e| !seen.contains(&event_key(e)));
+                                }
+                                if !new_events.is_empty() {
+                                    let window_start = ms_to_iso_local(start_ms);
+                                    shared.events.update(|all| {
+                                        let old = mem::take(all);
+                                        new_events.extend(old.into_iter().filter(|e| e.ts >= window_start));
+                                        new_events.truncate(2000);
+                                        *all = new_events;
+                                    });
+                                }
                             } else {
                                 shared.events.set(new_events);
                             }
@@ -670,6 +768,13 @@ fn App() -> impl IntoView {
         });
     });
 
+    Effect::new(move |_| {
+        let word = machine_word(meta.get().as_ref());
+        if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
+            doc.set_title(&format!("AI activity on this {word}"));
+        }
+    });
+
     let window_label = Memo::new(move |_| {
         if is_live.get() {
             format!("Live \u{2022} last {}", window_size.get().label())
@@ -685,7 +790,7 @@ fn App() -> impl IntoView {
         <div id="bg-dim" style:opacity=move || {
             settings.background.get().map(|b| b.dim as f64).unwrap_or(1.0).to_string()
         }></div>
-        <Header shared=shared clock=clock settings=settings/>
+        <Header shared=shared clock=clock settings=settings meta=meta/>
         <main>
             <TimeControls
                 window_size=window_size
@@ -695,6 +800,7 @@ fn App() -> impl IntoView {
                 window_label=window_label
             />
             <PerfMeters perf=shared.perf sections=settings.sections/>
+            <AppsPanel state=shared.state perf=shared.perf sections=settings.sections/>
             <RiverLanesView
                 events=shared.events
                 window_size=window_size
@@ -702,7 +808,7 @@ fn App() -> impl IntoView {
                 view_end_ms=view_end_ms
                 sections=settings.sections
             />
-            <LiveFeed events=shared.events filter=filter sections=settings.sections/>
+            <LiveFeed events=shared.events filter=filter window_size=window_size sections=settings.sections/>
             <aside>
                 <WindowCounts state=shared.state window_label=window_label sections=settings.sections/>
                 <EndpointsChart state=shared.state sections=settings.sections/>
@@ -712,11 +818,16 @@ fn App() -> impl IntoView {
 }
 
 #[component]
-fn Header(shared: SharedState, clock: RwSignal<String>, settings: SettingsState) -> impl IntoView {
+fn Header(
+    shared: SharedState,
+    clock: RwSignal<String>,
+    settings: SettingsState,
+    meta: RwSignal<Option<MetaResponse>>,
+) -> impl IntoView {
     view! {
         <header>
             <span class="pulse" class:off=move || !shared.connected.get()></span>
-            <h1>"AI activity on this PC"</h1>
+            <h1>{move || format!("AI activity on this {}", machine_word(meta.get().as_ref()))}</h1>
             <span id="clock">{move || clock.get()}</span>
             <div id="live" aria-live="polite">
                 {move || {
@@ -735,7 +846,12 @@ fn Header(shared: SharedState, clock: RwSignal<String>, settings: SettingsState)
                                     view! { <span class="chip">"No AI tools running"</span> }.into_any()
                                 } else {
                                     let chips: Vec<_> = st.running.iter()
-                                        .map(|r| view! { <span class="chip">{format!("{} running", r.name)}</span> })
+                                        .map(|r| {
+                                            let procs = if r.procs > 1 { format!(" \u{b7} {} procs", r.procs) } else { String::new() };
+                                            let text = format!("{}{procs} \u{b7} up {}", r.app, fmt_since(&r.since));
+                                            let title = format!("Running since {}", r.since.replace('T', " "));
+                                            view! { <span class="chip" title=title>{text}</span> }
+                                        })
                                         .collect();
                                     chips.into_view().into_any()
                                 };
@@ -960,7 +1076,7 @@ fn RiverLanesView(
     view! {
         <section id="river" style:display=move || if sections.get().river { "" } else { "none" }>
             <div class="row">
-                <h2>{move || format!("Last {}", window_size.get().label())} <span class="sub">"one row per AI tool"</span></h2>
+                <h2>{move || format!("Last {}", window_size.get().label())} <span class="sub">"one row per app"</span></h2>
                 <div class="legend">
                     <span><i style="background:var(--cmd)"></i>"Command"</span>
                     <span><i style="background:var(--net)"></i>"Network"</span>
@@ -983,7 +1099,7 @@ fn RiverLanesView(
                         if now - t > span_ms || t > now {
                             continue;
                         }
-                        lanes.entry(nice_name(&e.tool)).or_default().push((t, kind_color_var(e.kind), e.flagged));
+                        lanes.entry(event_app(e)).or_default().push((t, kind_color_var(e.kind), e.flagged));
                     }
                     if lanes.is_empty() {
                         let msg = format!("No AI activity in the last {}.", window_size.get().label());
@@ -1010,9 +1126,19 @@ fn RiverLanesView(
             <div class="axis">
                 <span></span>
                 <div>
-                    <span>{move || format!("{} ago", window_size.get().label())}</span>
-                    <span>"75%"</span><span>"50%"</span><span>"25%"</span>
-                    <span>{move || if is_live.get() { "Now".to_string() } else { "".to_string() }}</span>
+                    {move || {
+                        let end = view_end_ms.get();
+                        let span = window_size.get().ms();
+                        let live = is_live.get();
+                        (0..=4).map(|i| {
+                            let label = if i == 4 && live {
+                                "Now".to_string()
+                            } else {
+                                fmt_axis(end - span * (1.0 - i as f64 / 4.0), span)
+                            };
+                            view! { <span>{label}</span> }
+                        }).collect_view()
+                    }}
                 </div>
             </div>
         </section>
@@ -1057,7 +1183,7 @@ fn vu_ladder(pct: f64) -> Vec<impl IntoView> {
         .collect()
 }
 
-fn perf_row(name: &str, proc_count: u32, cpu_pct: f64, mem_bytes: f64, gpu_pct: Option<f64>, live: bool, gpu_available: bool, total: bool) -> impl IntoView {
+fn perf_row(name: &str, proc_count: u32, cpu_pct: f64, mem_bytes: f64, gpu_pct: Option<f64>, live: bool, gpu_available: bool, total: bool) -> impl IntoView + use<> {
     let name_owned = name.to_string();
     let row_class = if total { "perf-row total" } else { "perf-row" };
 
@@ -1125,7 +1251,7 @@ fn fmt_compact_total(p: &PerfSummary) -> String {
     format!("{}p \u{b7} CPU {:.1}% \u{b7} MEM {}{}", p.total.proc_count, p.total.cpu_pct, fmt_mem(p.total.mem_bytes as f64), gpu)
 }
 
-fn perf_detail_rows(p: &PerfSummary) -> impl IntoView {
+fn perf_detail_rows(p: &PerfSummary) -> impl IntoView + use<> {
     let live = p.is_live;
     let label = if live { "Live" } else { "Avg over this window" };
     let total_row =
@@ -1196,8 +1322,16 @@ fn PerfMeters(perf: RwSignal<Option<PerfSummary>>, sections: RwSignal<SectionVis
     }
 }
 
+const FEED_MAX_ROWS: usize = 250;
+
 #[component]
-fn LiveFeed(events: RwSignal<Vec<UnifiedEvent>>, filter: RwSignal<FeedFilter>, sections: RwSignal<SectionVisibility>) -> impl IntoView {
+fn LiveFeed(
+    events: RwSignal<Vec<UnifiedEvent>>,
+    filter: RwSignal<FeedFilter>,
+    window_size: RwSignal<WindowSize>,
+    sections: RwSignal<SectionVisibility>,
+) -> impl IntoView {
+    let show_routine = RwSignal::new(false);
     view! {
         <section id="feed-section" style:display=move || if sections.get().feed { "" } else { "none" }>
             <h2>"Live feed"</h2>
@@ -1210,40 +1344,81 @@ fn LiveFeed(events: RwSignal<Vec<UnifiedEvent>>, filter: RwSignal<FeedFilter>, s
                         >{f.label()}</button>
                     }
                 }).collect_view()}
+                <label class="feed-toggle" title="Keep-awake, sleep and pipeline pieces like tail or grep">
+                    <input type="checkbox" prop:checked=move || show_routine.get()
+                        on:change=move |ev| show_routine.set(event_target_checked(&ev))/>
+                    "Show routine commands"
+                </label>
             </div>
             <ul id="feed">
                 {move || {
                     let all = events.get();
                     let f = filter.get();
-                    let rows: Vec<_> = all.iter().filter(|e| f.matches(e)).take(250).collect();
-                    if rows.is_empty() {
-                        view! { <li class="empty">"Nothing here yet. Open an AI tool and activity will show up within a few seconds."</li> }.into_any()
-                    } else {
-                        rows.into_iter().map(|e| {
-                            let li_class = if e.flagged { "flag" } else { "" };
-                            let time = e.ts.get(11..).unwrap_or(&e.ts).to_string();
-                            let dot_color = if e.flagged { "var(--flag)".to_string() } else { kind_color_var(e.kind).to_string() };
-                            let tool_name = nice_name(&e.tool);
-                            let tool_full = e.tool.clone();
-                            let detail = e.detail.clone();
-                            view! {
-                                <li class={li_class}>
-                                    <time>{time}</time>
-                                    <span class="dot" style={format!("background:{dot_color}")}></span>
-                                    <span class="tool" title={tool_full}>{tool_name}</span>
-                                    <code>{detail}</code>
-                                </li>
-                            }
-                        }).collect_view().into_any()
+                    let routine = show_routine.get();
+                    let with_date = window_size.get().ms() > 86_400_000.0;
+                    let matching: Vec<&UnifiedEvent> =
+                        all.iter().filter(|e| f.matches(e) && (routine || !e.routine)).collect();
+                    if matching.is_empty() {
+                        return view! { <li class="empty">"Nothing here yet. Open an AI tool and activity will show up within a few seconds."</li> }.into_any();
                     }
+                    let total = matching.len();
+                    let rows = matching.into_iter().take(FEED_MAX_ROWS).map(|e| feed_row(e, with_date)).collect_view();
+                    let more = (total > FEED_MAX_ROWS).then(|| {
+                        let msg = format!("Showing the newest {FEED_MAX_ROWS} of {total}. Narrow the window or filter to see older rows.");
+                        view! { <li class="empty">{msg}</li> }
+                    });
+                    (rows, more).into_any()
                 }}
             </ul>
         </section>
     }
 }
 
+fn feed_row(e: &UnifiedEvent, with_date: bool) -> impl IntoView + use<> {
+    let mut classes = Vec::new();
+    if e.flagged {
+        classes.push("flag");
+    }
+    if e.routine {
+        classes.push("routine");
+    }
+    let dot_color = if e.flagged { "var(--flag)" } else { kind_color_var(e.kind) };
+    let headline = event_headline(e);
+    let owner = e.owner.clone().map(|o| {
+        view! { <span class="badge" title="Approximate owner, from known IP ranges and reverse DNS">{o}</span> }
+    });
+    let mut facts = Vec::new();
+    if let Some(pid) = e.pid {
+        facts.push(format!("pid {pid}"));
+    }
+    if e.tool != event_app(e) && !e.tool.is_empty() {
+        facts.push(format!("process {}", e.tool));
+    }
+    if let Some(exe) = &e.exe {
+        facts.push(exe.clone());
+    }
+    if let Some(d) = e.duration_s {
+        facts.push(format!("ran {}", fmt_duration(d)));
+    }
+    view! {
+        <li class=classes.join(" ")>
+            <time>{fmt_feed_time(&e.ts, with_date)}</time>
+            <span class="dot" style=format!("background:{dot_color}")></span>
+            <span class="tool" title=e.tool.clone()>{event_app(e)}</span>
+            <details>
+                <summary><code>{headline}</code>{owner}</summary>
+                <div class="more">
+                    <code>{e.detail.clone()}</code>
+                    <span class="facts">{facts.join(" \u{b7} ")}</span>
+                </div>
+            </details>
+        </li>
+    }
+}
+
 #[component]
 fn WindowCounts(state: RwSignal<Option<StateSummary>>, window_label: Memo<String>, sections: RwSignal<SectionVisibility>) -> impl IntoView {
+    let aside = |n: u32, what: &str| (n > 0).then(|| view! { <span class="sub">{format!("({n} {what})")}</span> });
     view! {
         <section id="window-counts" style:display=move || if sections.get().window_counts { "" } else { "none" }>
             <h2>{move || window_label.get()}</h2>
@@ -1251,8 +1426,10 @@ fn WindowCounts(state: RwSignal<Option<StateSummary>>, window_label: Memo<String
                 {move || {
                     let c = state.get().map(|s| s.counts).unwrap_or_default();
                     view! {
-                        <dt>"AI tools launched"</dt><dd>{c.launched}</dd>
-                        <dt>"Commands run by AI"</dt><dd>{c.commands}</dd>
+                        <dt title="Started while the collector was watching">"AI tools launched"</dt>
+                        <dd>{c.launched}{aside(c.already_running, "already running")}</dd>
+                        <dt>"Commands run by AI"</dt>
+                        <dd>{c.commands}{aside(c.routine_commands, "routine")}</dd>
                         <dt>"Flagged commands"</dt><dd class=(c.flagged > 0).then_some("warn")>{c.flagged}</dd>
                         <dt>"Endpoints contacted"</dt><dd>{c.endpoints}</dd>
                     }
@@ -1269,23 +1446,102 @@ fn EndpointsChart(state: RwSignal<Option<StateSummary>>, sections: RwSignal<Sect
             <h2>"Who they're talking to"</h2>
             <div>
                 {move || {
-                    let endpoints = state.get().map(|s| s.endpoints).unwrap_or_default();
-                    if endpoints.is_empty() {
-                        view! { <div class="empty">"No connections in this window."</div> }.into_any()
-                    } else {
-                        let max = endpoints.iter().map(|e| e.n).max().unwrap_or(1).max(1);
-                        endpoints.into_iter().map(|e| {
-                            let pct = (e.n as f64 / max as f64) * 100.0;
-                            view! {
-                                <div class="ep">
-                                    <span><span>{e.host}</span><span>{e.n}</span></span>
-                                    <div class="bar"><i style={format!("width:{pct}%")}></i></div>
-                                </div>
-                            }
-                        }).collect_view().into_any()
+                    let Some(st) = state.get() else {
+                        return view! { <div class="empty">"No connections in this window."</div> }.into_any();
+                    };
+                    if st.endpoints.is_empty() {
+                        return view! { <div class="empty">"No connections in this window."</div> }.into_any();
                     }
+                    let hidden = (st.counts.endpoints as usize).saturating_sub(st.endpoints.len());
+                    let max = st.endpoints.iter().map(|e| e.n).max().unwrap_or(1).max(1);
+                    let rows = st.endpoints.into_iter().map(|e| {
+                        let pct = (e.n as f64 / max as f64) * 100.0;
+                        let target = if e.port == 443 { e.host.clone() } else { format!("{}:{}", e.host, e.port) };
+                        let title = format!(
+                            "{}:{} ({})\nFirst seen {}\nLast seen {}",
+                            e.host, e.port, e.ip, e.first.replace('T', " "), e.last.replace('T', " ")
+                        );
+                        let owner = e.owner.map(|o| view! { <span class="badge" title="Approximate owner">{o}</span> });
+                        let plural = if e.n == 1 { "" } else { "s" };
+                        let who = format!("{} \u{b7} {} connection{plural} \u{b7} last {} ago", e.apps.join(", "), e.n, fmt_since(&e.last));
+                        view! {
+                            <div class="ep" title=title>
+                                <span><span class="ep-host">{target}{owner}</span><span>{e.n}</span></span>
+                                <div class="bar"><i style=format!("width:{pct}%")></i></div>
+                                <span class="ep-who">{who}</span>
+                            </div>
+                        }
+                    }).collect_view();
+                    let more = (hidden > 0).then(|| view! { <div class="sub ep-more">{format!("+{hidden} more")}</div> });
+                    (rows, more).into_any()
                 }}
             </div>
+        </section>
+    }
+}
+
+fn perf_for<'a>(perf: &'a Option<PerfSummary>, app: &str) -> Option<&'a ToolPerf> {
+    perf.as_ref()?.tools.iter().find(|t| t.tool == app)
+}
+
+fn app_row(a: AppSummary, perf: &Option<PerfSummary>) -> impl IntoView + use<> {
+    let status = if a.running {
+        let procs = if a.procs == 1 { "1 process".to_string() } else { format!("{} processes", a.procs) };
+        let up = a.since.as_deref().map(|s| format!(" \u{b7} up {}", fmt_since(s))).unwrap_or_default();
+        format!("running \u{b7} {procs}{up}")
+    } else {
+        "not running".to_string()
+    };
+    let p = perf_for(perf, &a.app);
+    let cpu = p.map(|p| format!("{:.1}%", p.cpu_pct)).unwrap_or_else(|| "\u{2013}".to_string());
+    let mem = p.map(|p| fmt_mem(p.mem_bytes as f64)).unwrap_or_else(|| "\u{2013}".to_string());
+    let flagged = (a.flagged > 0).then(|| view! { <span class="warn">{format!(" ({} flagged)", a.flagged)}</span> });
+    view! {
+        <tr class:idle=!a.running>
+            <td class="app-name">{a.app}</td>
+            <td class="muted">{status}</td>
+            <td class="num">{a.launches}</td>
+            <td class="num">{a.commands}{flagged}</td>
+            <td class="num">{a.endpoints}</td>
+            <td class="num">{cpu}</td>
+            <td class="num">{mem}</td>
+        </tr>
+    }
+}
+
+/// One row per app: what it's doing now and what it did in the window.
+#[component]
+fn AppsPanel(
+    state: RwSignal<Option<StateSummary>>,
+    perf: RwSignal<Option<PerfSummary>>,
+    sections: RwSignal<SectionVisibility>,
+) -> impl IntoView {
+    view! {
+        <section id="apps" style="grid-column:1/-1" style:display=move || if sections.get().apps { "" } else { "none" }>
+            <h2>"Apps" <span class="sub">"activity in this window, grouped by app"</span></h2>
+            {move || {
+                let apps = state.get().map(|s| s.apps).unwrap_or_default();
+                if apps.is_empty() {
+                    return view! { <div class="empty">"No AI apps seen in this window."</div> }.into_any();
+                }
+                let perf = perf.get();
+                let cpu_label = if perf.as_ref().is_some_and(|p| p.is_live) { "CPU" } else { "Avg CPU" };
+                let mem_label = if perf.as_ref().is_some_and(|p| p.is_live) { "Memory" } else { "Avg memory" };
+                let rows = apps.into_iter().map(|a| app_row(a, &perf)).collect_view();
+                view! {
+                    <div class="table-wrap">
+                        <table class="apps-table">
+                            <thead><tr>
+                                <th>"App"</th><th>"Status"</th>
+                                <th class="num" title="Started while the collector was watching">"Launched"</th>
+                                <th class="num">"Commands"</th><th class="num">"Endpoints"</th>
+                                <th class="num">{cpu_label}</th><th class="num">{mem_label}</th>
+                            </tr></thead>
+                            <tbody>{rows}</tbody>
+                        </table>
+                    </div>
+                }.into_any()
+            }}
         </section>
     }
 }

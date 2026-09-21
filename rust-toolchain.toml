@@ -1,0 +1,10 @@
+# Pins the toolchain every build uses; rustup reads this file automatically for
+# any cargo run in this repo. Bump the channel deliberately, in a change that
+# also fixes whatever the new compiler and clippy flag, and keep it >= the
+# `rust-version` MSRV declared in Cargo.toml.
+#
+# wasm32-unknown-unknown rides along so `trunk build` works from a fresh clone.
+[toolchain]
+channel = "1.98.1"
+components = ["rustfmt", "clippy"]
+targets = ["wasm32-unknown-unknown"]

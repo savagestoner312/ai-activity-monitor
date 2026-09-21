@@ -2,16 +2,20 @@
 name = "aimon-core"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 
 [dependencies]
 aimon-api-types = { path = "../aimon-api-types" }
 serde = { workspace = true }
 chrono = { workspace = true }
-rusqlite = { version = "0.32", features = ["bundled", "chrono"] }
+rusqlite = { version = "0.40", features = ["bundled", "chrono"] }
+
+# The collector's platforms: Windows (the original target) and macOS.
+[target.'cfg(any(windows, target_os = "macos"))'.dependencies]
+sysinfo = "0.39"
+netstat2 = "0.11"
+dns-lookup = "4"
 
 [target.'cfg(windows)'.dependencies]
-winreg = "0.52"
-sysinfo = "0.32"
-netstat2 = "0.11"
-dns-lookup = "2"
-windows = { version = "0.57", features = ["Win32_System_Performance", "Win32_Foundation"] }
+winreg = "0.56"
+windows = { version = "0.62", features = ["Win32_System_Performance", "Win32_Foundation"] }

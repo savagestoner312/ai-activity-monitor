@@ -1,6 +1,6 @@
 # AI Activity Monitor
 
-See what AI tools are doing on your Windows PC, live: which ones are running, what commands they run, which services they talk to, how much CPU/memory/GPU they're using, and when anything uses your mic or camera.
+See what AI tools are doing on your Windows PC or Mac, live: which ones are running, what commands they run, which services they talk to, how much CPU/memory/GPU they're using, and when anything uses your mic or camera.
 
 ![Dashboard](docs/dashboard-preview.png)
 
@@ -10,7 +10,7 @@ See what AI tools are doing on your Windows PC, live: which ones are running, wh
 - Commands AI tools spawn (PowerShell, cmd, git, python, curl...), with risky ones flagged
 - Network endpoints each AI tool connects to, with reverse DNS so you see hostnames instead of raw IPs where one exists
 - CPU, memory, and GPU usage per AI tool, live — a compact retro VU-meter readout that expands into a full per-tool breakdown
-- Microphone and camera use by any app, from Windows' own privacy records
+- Microphone and camera use by any app, from Windows' own privacy records (Windows only)
 
 Browse history with the timeframe dropdown and look-back slider — not just live activity, the full range you've collected. Drag back to freeze on a past window; jump back to "Live" any time.
 
@@ -18,9 +18,9 @@ Customize it from the gear icon in the header: pick a curated color theme (or tw
 
 ![Theme + performance overlay](docs/dashboard-theme-preview.png)
 
-All data stays local in `%LOCALAPPDATA%\AIMonitor\aimon.db`. The dashboard listens on `127.0.0.1` only. Theme/layout/background preferences live only in your browser's local storage — never sent anywhere.
+All data stays local in `%LOCALAPPDATA%\AIMonitor\aimon.db` (Windows) or `~/Library/Application Support/AIMonitor/aimon.db` (macOS). The dashboard listens on `127.0.0.1` only. Theme/layout/background preferences live only in your browser's local storage — never sent anywhere.
 
-## Quick start
+## Quick start (Windows)
 
 Requires Windows 10/11 and the Rust toolchain (MSVC), plus `trunk` for building the frontend:
 
@@ -55,6 +55,22 @@ To uninstall:
 "AIMonitor-Collector","AIMonitor-Dashboard","AIMonitor-DailyReport" | % { Unregister-ScheduledTask -TaskName $_ -Confirm:$false }
 ```
 
+## Quick start (macOS)
+
+Apple silicon Macs. Needs [rustup](https://rustup.rs) and `trunk` (`brew install trunk`); `rust-toolchain.toml` pulls in the pinned Rust version and the wasm32 target on first build.
+
+```sh
+git clone <repo-url>
+cd ai-activity-monitor
+./install.sh
+```
+
+This builds everything, registers three LaunchAgents in `~/Library/LaunchAgents` (collector and dashboard at login, 9 PM daily report), and opens the dashboard. Logs go to the data folder. `./install.sh --uninstall` removes the agents and keeps your data.
+
+To run it by hand instead, build the frontend first (`cd frontend/aimon-ui && trunk build --release`) and then use the same two `cargo run` commands as on Windows.
+
+What's missing on macOS: GPU usage (macOS has no per-process GPU counter an unprivileged process can read, so the GPU column stays hidden) and mic/camera history (macOS doesn't keep one). The collector only sees your own user's processes in full; other users' and root processes show up without a command line.
+
 ## Project layout
 
 | Path | Purpose |
@@ -65,7 +81,8 @@ To uninstall:
 | `crates/aimon-core` | Shared schema, DB access, process/network/registry monitoring, AI-tool matching rules |
 | `crates/aimon-api-types` | Wire types shared between the dashboard server and the frontend |
 | `frontend/aimon-ui` | Leptos (Rust/WASM) dashboard UI, built with `trunk` |
-| `install.ps1` | Build + scheduled task setup |
+| `install.ps1` | Windows build + scheduled task setup |
+| `install.sh` | macOS build + LaunchAgent setup |
 
 To add AI tools to watch, edit `AI_NAME_MATCH` / `AI_CMDLINE_MATCH` in `crates/aimon-core/src/rules.rs`.
 

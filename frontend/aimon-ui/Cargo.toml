@@ -2,21 +2,22 @@
 name = "aimon-ui"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 
 [dependencies]
 aimon-api-types = { path = "../../crates/aimon-api-types" }
-leptos = { version = "0.7", features = ["csr"] }
+leptos = { version = "0.8", features = ["csr"] }
 console_error_panic_hook = "0.1"
 console_log = "1"
 log = "0.4"
-gloo-net = "0.6"
-gloo-timers = { version = "0.3", features = ["futures"] }
+gloo-net = "0.7"
+gloo-timers = { version = "0.4", features = ["futures"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
-gloo-file = { version = "0.3", features = ["futures"] }
+gloo-file = { version = "0.4", features = ["futures"] }
 web-sys = { version = "0.3", features = [
     "HtmlInputElement", "File", "FileList", "HtmlImageElement", "HtmlCanvasElement",
     "CanvasRenderingContext2d", "HtmlElement", "CssStyleDeclaration", "Storage",
